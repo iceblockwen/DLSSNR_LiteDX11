@@ -4,6 +4,7 @@
 #include "input_keyboard.hpp"
 #include "input.hpp"
 #include <array>
+#include <atomic>
 #include <mutex>
 
 namespace
@@ -13,6 +14,23 @@ struct Keys
 {
     std::array<bool, 256> legacyDown{}, legacyBlocked{}, rawDown{}, rawBlocked{}, pollRelease{};
 } keys;
+// Set while any pollRelease entry is pending. The game calls GetAsyncKeyState /
+// GetKeyState / GetKeyboardState continuously, so both poll queries read this
+// first and skip the mutex entirely when the menu owns nothing.
+std::atomic<bool> pollPending{};
+void RefreshPollPending()
+{
+    bool any = false;
+    for (const bool pending : keys.pollRelease)
+    {
+        if (pending)
+        {
+            any = true;
+            break;
+        }
+    }
+    pollPending.store(any, std::memory_order_release);
+}
 bool IsDown(UINT message)
 {
     return message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
@@ -60,6 +78,7 @@ bool PollHeldLocked(int key)
     if (!(GetAsyncKeyState(key) & 0x8000))
     {
         keys.pollRelease[key] = false;
+        RefreshPollPending();
     }
     return keys.pollRelease[key];
 }
@@ -117,6 +136,7 @@ bool PanelKeyboardMessage(HWND window, UINT message, WPARAM key, LPARAM param)
         return false;
     }
     std::lock_guard lock(mutex);
+    bool result{};
     if (IsDown(message))
     {
         // A repeat after opening is not a new press. Its eventual release still
@@ -127,11 +147,15 @@ bool PanelKeyboardMessage(HWND window, UINT message, WPARAM key, LPARAM param)
             keys.pollRelease[code] = captured;
         }
         keys.legacyDown[code] = true;
-        return captured || keys.legacyBlocked[code] || key == VK_INSERT;
+        result = captured || keys.legacyBlocked[code] || key == VK_INSERT;
     }
-    const bool blocked = keys.legacyBlocked[code] || key == VK_INSERT;
-    keys.legacyDown[code] = keys.legacyBlocked[code] = keys.pollRelease[code] = false;
-    return blocked;
+    else
+    {
+        result = keys.legacyBlocked[code] || key == VK_INSERT;
+        keys.legacyDown[code] = keys.legacyBlocked[code] = keys.pollRelease[code] = false;
+    }
+    RefreshPollPending();
+    return result;
 }
 bool PanelKeyboardPollBlocked(int key)
 {
@@ -146,6 +170,10 @@ bool PanelKeyboardPollBlocked(int key)
     if (PanelGameInputBlocked())
     {
         return true;
+    }
+    if (!pollPending.load(std::memory_order_acquire))
+    {
+        return false;
     }
     std::lock_guard lock(mutex);
     if (key == VK_SHIFT)
@@ -172,6 +200,11 @@ std::array<bool, 256> PanelKeyboardPollMask()
     if (PanelGameInputBlocked())
     {
         blocked.fill(true);
+        return blocked;
+    }
+    if (!pollPending.load(std::memory_order_acquire))
+    {
+        blocked[VK_INSERT] = true;
         return blocked;
     }
     std::lock_guard lock(mutex);
@@ -206,6 +239,7 @@ void PanelKeyboardTransition(bool enabled)
             keys.pollRelease[key] = false;
         }
     }
+    RefreshPollPending();
 }
 void PanelKeyboardFocusLost()
 {
@@ -220,6 +254,7 @@ void PanelKeyboardFocusLost()
             keys.pollRelease[key] = false;
         }
     }
+    RefreshPollPending();
 }
 bool PanelRawKeyboardMessage(const RAWKEYBOARD& key)
 {
@@ -286,5 +321,6 @@ void FilterPanelRawInput(RAWINPUT* input, unsigned bytes)
         key.VKey = 0;
         key.Message = WM_KEYUP;
     }
+    RefreshPollPending();
 }
 }
