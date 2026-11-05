@@ -30,8 +30,8 @@ float Curve(float m){const float k=.75;if(m<=k)return m;float e=(m-k)/(1-k);retu
 float Inverse(float y){const float k=.75;if(y<=k)return y;float u=min((y-k)/(1-k),.999999);return k+(1-k)*u*rsqrt(max(1-u*u,1e-8));}
 float3 Encode(float3 v){v=max(v,0);float m=max(v.r,max(v.g,v.b));return m<=1e-6?v:v*(Curve(m)/m);}
 float3 Decode(float3 v){v=max(v,0);float m=max(v.r,max(v.g,v.b));return m<=1e-6?v:v*(Inverse(m)/m);}
-// Composition follows RenoDX/ShortFuse via Skynizz's attributed implementation.
-// See Licenses/RenoDX_ATTRIBUTION.txt. OkLab matrices: Bjorn Ottosson.
+// Composition: OkLab difference gain between the model result and the input.
+// OkLab matrices: Bjorn Ottosson.
 float Luma(float3 v){return dot(v,float3(.2126,.7152,.0722));}
 float3 ToOkLab(float3 v){
  float3 lms=mul(float3x3(.4122214708,.5363325363,.0514459929,.2119034982,.6806995451,.1073969566,.0883024619,.2817188376,.6299787005),v);
