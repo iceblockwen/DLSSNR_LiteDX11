@@ -3,8 +3,8 @@
 #include "../input/input.hpp"
 #include "../input/input_keyboard.hpp"
 #include "../nr/depth11.hpp"
-#include "../config_writer.hpp"
-#include "../config_storage.hpp"
+#include "../config.hpp"
+
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 

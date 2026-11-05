@@ -2,7 +2,7 @@
 #include "model_settings.hpp"
 #include "model_runtime.hpp"
 #include "capture11.hpp"
-#include "../config_writer.hpp"
+#include "../config.hpp"
 #include "../graphics.hpp"
 #include <mutex>
 #include <atomic>

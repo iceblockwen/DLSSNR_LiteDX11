@@ -86,10 +86,8 @@ target_compile_options(litedx11_frames PRIVATE /W4 /EHsc /utf-8)
 target_link_libraries(litedx11_frames PUBLIC d3d11 d3d12 dxgi.lib d3dcompiler)
 
 add_library(litedx11_runtime SHARED
-  src/bootstrap.cpp
   src/runtime.cpp
-  src/config_writer.cpp
-  src/config_storage.cpp
+  src/config.cpp
   src/hooks.cpp
   src/ui/panel.cpp
   src/ui/panel_ui.cpp

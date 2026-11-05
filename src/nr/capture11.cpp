@@ -2,7 +2,7 @@
 #include "../graphics.hpp"
 #include "depth11.hpp"
 #include "dense_flow.hpp"
-#include "../config_writer.hpp"
+#include "../config.hpp"
 #include "model_settings.hpp"
 #include "model_runtime.hpp"
 

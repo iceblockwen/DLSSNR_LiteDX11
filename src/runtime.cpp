@@ -3,7 +3,8 @@
 #include "nr/capture11.hpp"
 #include "nr/depth11.hpp"
 #include "nr/model_settings.hpp"
-#include "config_storage.hpp"
+#include "nr/model_runtime.hpp"
+#include "config.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -197,4 +198,72 @@ void Log(const wchar_t* message) noexcept
     {
     }
 }
+}
+
+namespace
+{
+HMODULE ownModule{};
+std::once_flag startupOnce;
+DWORD startupError{};
+}
+
+// Loaded by the proxy's Boot worker: never runs under loader lock. The body
+// reports failures through lite::Fail, and the return value is the proxy's
+// startup result.
+extern "C" __declspec(dllexport) DWORD WINAPI Start(void*)
+{
+    std::call_once(startupOnce, []
+                   {
+                       try
+                       {
+                           wchar_t path[MAX_PATH]{};
+                           if (!GetSystemDirectoryW(path, MAX_PATH) || wcscat_s(path, L"\\dxgi.dll"))
+                           {
+                               throw DWORD(ERROR_BAD_PATHNAME);
+                           }
+                           const auto system = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+                           if (!system)
+                           {
+                               throw GetLastError();
+                           }
+
+                           lite::Initialize(ownModule, system);
+                           const bool active = lite::Enabled();
+                           // Install capture before any future heavyweight model preload.
+                           if (active)
+                           {
+                               lite::InstallCapture();
+                           }
+                           lite::StartConfigWriter();
+                           if (active)
+                           {
+                               lite::nr::DiscoverModelRuntime();
+                           }
+                       }
+                       catch (DWORD error)
+                       {
+                           lite::Fail(error);
+                           startupError = error;
+                       }
+                       catch (HRESULT error)
+                       {
+                           lite::Fail(DWORD(error));
+                           startupError = DWORD(error);
+                       }
+                       catch (...)
+                       {
+                           lite::Fail(ERROR_DLL_INIT_FAILED);
+                           startupError = ERROR_DLL_INIT_FAILED;
+                       }
+                   });
+    return startupError;
+}
+
+BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        ownModule = module;
+    }
+    return TRUE;
 }

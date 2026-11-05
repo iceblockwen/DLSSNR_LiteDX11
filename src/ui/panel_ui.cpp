@@ -3,7 +3,7 @@
 #include "panel_impl.hpp"
 #include "ui_widgets.hpp"
 #include "../input/input.hpp"
-#include "../config_storage.hpp"
+#include "../config.hpp"
 #include "../nr/depth11.hpp"
 #include <imgui.h>
 #include <imgui_impl_win32.h>

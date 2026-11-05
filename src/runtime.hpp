@@ -33,6 +33,9 @@ struct Status
     wchar_t systemPath[1024]{};
 };
 void Initialize(HMODULE plugin, HMODULE system);
+// L2 entry points implemented by hooks.cpp.
+void InstallCapture();
+void InstallD3D11Capture(HMODULE module);
 void Fail(DWORD error);
 Status Snapshot();
 // Lock-free hot-path queries; Snapshot copies the full status block.
