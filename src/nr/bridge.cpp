@@ -385,8 +385,6 @@ struct Bridge11::Impl
                 ThrowIfFailed(device11->CreateTexture2D(&staging, nullptr, &t.backup));
                 ThrowIfFailed(device11->CreateShaderResourceView(t.backup.Get(), &srv, &t.view));
             }
-            lite::LogVerbose(SUCCEEDED(direct) ? L"depth bridge: direct SRV (no staging copy)"
-                                               : L"depth bridge: staging copy (source is not typeless)");
             if (!depthShader)
             {
                 ThrowIfFailed(device11->CreateComputeShader(bridgeDepthShader, sizeof(bridgeDepthShader), nullptr, &depthShader));
@@ -549,11 +547,6 @@ struct Bridge11::Impl
         if (!Matches(*slot, input, width, height, format))
         {
             operation = L"Allocate shared textures";
-            {
-                wchar_t text[192]{};
-                swprintf_s(text, L"bridge: slot rebuilt for %ux%u fmt=%u (shared textures, fence signal, flush)", width, height, unsigned(format));
-                lite::LogVerbose(text);
-            }
             auto fresh = NewSlot();
             // A game-declared depth subrect (guide extents/origins) is expressed in source pixels and
             // reaches the model as its Depth region, so such a twin keeps the source size. Only
@@ -587,12 +580,6 @@ struct Bridge11::Impl
             ThrowIfFailed(Share(fresh->output, desc, directOutput));
             fresh->output.desc = desc;
             fresh->frame.colorOutput = directOutput ? fresh->output.resource.Get() : nullptr;
-            {
-                wchar_t text[160]{};
-                swprintf_s(text, L"bridge: result %ls (fmt=%u %ux%u)", directOutput ? L"resolved in place" : L"copied back",
-                           unsigned(format), width, height);
-                lite::LogVerbose(text);
-            }
             // This marker covers any prior ImGui reads on the native context.
             const auto retirement = ++value;
             ThrowIfFailed(context->Signal(fence11.Get(), retirement));

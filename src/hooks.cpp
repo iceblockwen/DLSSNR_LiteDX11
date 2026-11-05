@@ -200,13 +200,11 @@ void Watch(HMODULE module)
         {
             lite::InstallD3D11Capture(module);
         }
-        catch (HRESULT error)
+        catch (HRESULT)
         {
-            lite::GraphicsFailure(error, L"D3D11 loader capture failed; original module load preserved");
         }
         catch (...)
         {
-            lite::GraphicsFailure(E_FAIL, L"D3D11 loader capture failed; original module load preserved");
         }
     }
 }
@@ -343,13 +341,11 @@ void CaptureAdapter(IDXGIAdapter* adapter) noexcept
     {
         InstallOnce<HParent>(lastParent, Method(adapter, 6));
     }
-    catch (HRESULT hr)
+    catch (HRESULT)
     {
-        lite::GraphicsFailure(hr, L"Adapter GetParent capture failed; native adapter retained");
     }
     catch (...)
     {
-        lite::GraphicsFailure(E_FAIL, L"Adapter GetParent capture failed; native adapter retained");
     }
 }
 void ResolveSwapchainRequest(HWND window, UINT& width, UINT& height) noexcept
@@ -420,7 +416,6 @@ void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT request
         ComPtr<IDXGISwapChain4> native;
         if (FAILED((*output)->QueryInterface(IID_PPV_ARGS(&native))))
         {
-            GraphicsFailure(E_NOINTERFACE, L"Swapchain4 unavailable; native swapchain retained");
             return;
         }
         auto* wrapper = new Swapchain(native.Get());
@@ -428,13 +423,11 @@ void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT request
         *output = wrapper;
         TrackSwapchain(wrapper, device);
     }
-    catch (HRESULT hr)
+    catch (HRESULT)
     {
-        GraphicsFailure(hr, L"Swapchain wrapper initialization failed");
     }
     catch (...)
     {
-        GraphicsFailure(E_FAIL, L"Swapchain wrapper initialization failed");
     }
 }
 }
@@ -458,7 +451,6 @@ void InstallD3D11Capture(HMODULE module)
     HCreate11::Stage(reinterpret_cast<void*>(fn));
     HDevice11::Stage(reinterpret_cast<void*>(single));
     transaction.Commit();
-    Log(L"D3D11 device and combined creation capture installed (existing or newly loaded module)");
 }
 void InstallCapture()
 {
@@ -500,7 +492,6 @@ void InstallCapture()
     {
         InstallD3D11Capture(module);
     }
-    Log(L"System DXGI factory exports and loader monitoring installed before model initialization");
 }
 void AttachFactory(REFIID, void** output) noexcept
 {
@@ -562,13 +553,11 @@ void AttachFactory(REFIID, void** output) noexcept
             }
         }
     }
-    catch (HRESULT hr)
+    catch (HRESULT)
     {
-        GraphicsFailure(hr, L"Factory capture transaction failed; native factory retained");
     }
     catch (...)
     {
-        GraphicsFailure(E_FAIL, L"Factory capture failed; native factory retained");
     }
 }
 }

@@ -100,7 +100,6 @@ void Initialize(HMODULE plugin, HMODULE system)
     nr::SetNativeCaptureEnabled(GetPrivateProfileIntW(L"NeuralRendering", L"NativeCapture", 0, ini.c_str()) != 0);
     if (nr::ModelRequested() && !nr::NativeCaptureEnabled())
     {
-        Log(L"NR is enabled but NativeCapture=0; this game supplies no NGX input, so NR cannot run until it is enabled and the game restarts");
     }
     auto flowFloat = [&](const wchar_t* key, const wchar_t* initial)
     {
@@ -125,18 +124,6 @@ void Initialize(HMODULE plugin, HMODULE system)
     wchar_t previewScale[32]{};
     GetPrivateProfileStringW(L"Diagnostics", L"ResourceScale", L"1", previewScale, 32, ini.c_str());
     nr::SetDisplayScale(static_cast<float>(_wtof(previewScale)), false);
-    const auto current = Snapshot();
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
-    wchar_t header[2600]{};
-    swprintf_s(header, L"[%04u-%02u-%02u %02u:%02u:%02u] DLSSNR_LiteDX11 " LITE_WIDEN(LITE_VERSION) L" PID=%lu enabled=%u level=%u\nRuntime: %ls\nSystem DXGI: %ls\nStartup: configuring graphics capture; NR model not initialized.",
-               now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
-               GetCurrentProcessId(), current.enabled, level, current.pluginPath, current.systemPath);
-    Log(header);
-    if (SkipSmallSwapchains())
-    {
-        Log(L"Compatibility: SkipSmallSwapchains=1; swapchains with actual width or height below 100 returned unchanged");
-    }
 }
 void Fail(DWORD error)
 {
@@ -144,7 +131,6 @@ void Fail(DWORD error)
     status.loader = State::Failed;
     status.error = error;
     usable = false;
-    Log(L"System DXGI forwarding failed; plugin unavailable");
 }
 Status Snapshot()
 {

@@ -11,11 +11,11 @@ namespace
 {
 std::atomic<ConfigWriter*> writer{};
 }
-ConfigWriter::ConfigWriter(Write output, std::function<void()> onError)
-    : write(std::move(output)), error(std::move(onError)), worker([this]
-                                                                  {
-                                                                      Run();
-                                                                  })
+ConfigWriter::ConfigWriter(Write output)
+    : write(std::move(output)), worker([this]
+                                       {
+                                           Run();
+                                       })
 {
 }
 ConfigWriter::~ConfigWriter()
@@ -94,16 +94,6 @@ void ConfigWriter::Run()
             catch (...)
             {
             }
-            if (!ok && error)
-            {
-                try
-                {
-                    error();
-                }
-                catch (...)
-                {
-                }
-            }
             lock.lock();
             if (ok)
             {
@@ -133,14 +123,10 @@ void StartConfigWriter()
         {
             return;
         }
-        writer = new ConfigWriter(WriteConfigValue, []
-                                  {
-                                      Log(L"Cannot save configuration in either selected or fallback directory; background retry is bounded");
-                                  });
+        writer = new ConfigWriter(WriteConfigValue);
     }
     catch (...)
     {
-        Log(L"Cannot start configuration writer; runtime settings still apply");
     }
 }
 void QueueConfig(const wchar_t* section, const wchar_t* key, const wchar_t* value) noexcept
@@ -154,7 +140,6 @@ void QueueConfig(const wchar_t* section, const wchar_t* key, const wchar_t* valu
     }
     catch (...)
     {
-        Log(L"Cannot queue resource setting");
     }
 }
 void FlushConfig() noexcept

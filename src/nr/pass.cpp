@@ -719,11 +719,6 @@ struct PassExecutor12::Impl
             recording->layer = layer;
             previous = recording;
             layer->first = true; // creation frame skips temporal evaluation
-            {
-                wchar_t text[160]{};
-                swprintf_s(text, L"NR layer created for %ux%u", ctx->w, ctx->h);
-                lite::LogVerbose(text);
-            }
             const auto rc = backend.Create(list, &layer->feature);
             status.modelResult = status.ngxResult = rc;
             status.ready = false;
@@ -731,7 +726,6 @@ struct PassExecutor12::Impl
             if (rc != 1 || !layer->feature)
             {
                 layer->failed = true;
-                lite::LogVerbose(L"NR layer creation failed; original frame preserved");
                 status.modelError = E_FAIL;
                 status.failedPass = 1;
                 status.reason = "NR feature creation failed; original frame preserved";

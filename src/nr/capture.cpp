@@ -125,7 +125,6 @@ unsigned __cdecl Create11(ID3D11DeviceContext* context, int feature, Parameters*
         }
         catch (...)
         {
-            Log(L"NGX metadata capture failed; original create result preserved");
         }
     }
     return result;
@@ -205,7 +204,6 @@ unsigned __cdecl Evaluate11(ID3D11DeviceContext* context, void* handle,
             }
             catch (...)
             {
-                Log(L"NGX resource capture failed; original evaluation result preserved");
             }
         }
     }
@@ -304,7 +302,6 @@ FARPROC ResolveNgx(HMODULE module, LPCSTR name, FARPROC original)
         const FARPROC replacements[]{thunks[n].create, thunks[n].evaluate, thunks[n].release, thunks[n].evaluateC};
         return replacements[field];
     }
-    Log(L"NGX capture module capacity reached; original lookup preserved");
     return original;
 }
 }

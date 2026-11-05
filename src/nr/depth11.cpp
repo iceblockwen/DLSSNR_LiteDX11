@@ -38,9 +38,6 @@ struct Context
     uint64_t lastWriteFrame{};
     unsigned frameWidth{}, frameHeight{}; // last EndFrame size, used to shape-filter bindings
     uint64_t frame{};
-    // Last winner reported at verbose level, so only a change produces a line.
-    ID3D11Resource* reportedWinner{};
-    unsigned reportedWidth{}, reportedHeight{};
 };
 struct Registry
 {
@@ -583,16 +580,6 @@ Result EndFrame(ID3D11DeviceContext* context, unsigned width, unsigned height, b
         result.height = best->height;
         result.format = best->format;
         result.candidates = unsigned(state.candidates.size());
-        if (best->source.Get() != state.reportedWinner || best->width != state.reportedWidth || best->height != state.reportedHeight)
-        {
-            state.reportedWinner = best->source.Get();
-            state.reportedWidth = best->width;
-            state.reportedHeight = best->height;
-            wchar_t text[192]{};
-            swprintf_s(text, L"depth: selected %ux%u candidates=%zu frame=%ux%u",
-                       best->width, best->height, state.candidates.size(), width, height);
-            lite::LogVerbose(text);
-        }
     }
     state.frameWidth = width;
     state.frameHeight = height;

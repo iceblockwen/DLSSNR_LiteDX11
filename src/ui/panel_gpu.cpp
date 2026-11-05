@@ -157,10 +157,6 @@ void Panel::Impl::Failure(HRESULT hr)
     status.visible = false;
     SyncPreviewDemand();
     wcscpy_s(status.reason, L"Overlay failed; original DXGI presentation continues");
-    wchar_t detail[256]{};
-    const HRESULT removed = device11->GetDeviceRemovedReason();
-    swprintf_s(detail, L"Overlay failure: stage=%s HRESULT=0x%08X deviceRemoved=0x%08X", renderStage, unsigned(hr), unsigned(removed));
-    Log(detail);
 }
 
 }

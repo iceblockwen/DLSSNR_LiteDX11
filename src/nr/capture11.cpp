@@ -75,10 +75,6 @@ void Report(HRESULT hr)
                              : FAILED(hr)         ? L"Resource capture/bridge failed"
                                                   : L"Frame resources captured";
     auto& r = Global();
-    if (FAILED(hr) && r.reportedCapture != hr)
-    {
-        Log(message);
-    }
     r.reportedCapture = hr;
     wcsncpy_s(s.reason, message, _TRUNCATE);
 }
@@ -320,15 +316,6 @@ HRESULT Model11(NativeCaptureState& native, ID3D11DeviceContext* context, const 
             }
             return rc;
         });
-    if (FAILED(hr) && hr != native.modelBridgeError)
-    {
-        wchar_t message[384]{};
-        swprintf_s(message,
-                   L"NR DX11 bridge failed at %ls: HRESULT 0x%08lX; input %u x %u format %u",
-                   native.modelBridge->LastOperation(), static_cast<unsigned long>(hr), desc.Width,
-                   desc.Height, unsigned(desc.Format));
-        Log(message);
-    }
     native.modelBridgeError = hr;
     if (hr == S_OK && previewRecorded && native.modelBridge->PreviewImage())
     {
@@ -564,13 +551,6 @@ float BridgeChainMilliseconds()
 void PreviewResult(HRESULT hr)
 {
     std::lock_guard lock(Global().mutex);
-    if (FAILED(hr) && Global().status.previewError != hr)
-    {
-        wchar_t message[96]{};
-        swprintf_s(message, L"Resource preview failed: HRESULT 0x%08lX",
-                   static_cast<unsigned long>(hr));
-        Log(message);
-    }
     Global().status.previewError = hr;
 }
 void RetireCompleted()

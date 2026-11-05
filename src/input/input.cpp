@@ -223,7 +223,6 @@ void SyncNativeLocked()
         if (!native.messages)
         {
             native.failed = true;
-            lite::Log(L"Native cursor thread hook unavailable; using software fallback");
         }
     }
     if (!native.held && !native.failed)
@@ -253,7 +252,6 @@ void SyncNativeLocked()
                 native.actualCount = realShow(FALSE);
             }
             native.failed = true;
-            lite::Log(L"Native panel cursor unavailable; using software fallback");
             return;
         }
         realCursor(native.panelCursor);
@@ -481,7 +479,6 @@ bool Attach(PVOID* original, PVOID detour)
     }
     if (error != NO_ERROR)
     {
-        lite::Log(L"Panel input Detours installation failed");
     }
     return error == NO_ERROR;
 }
@@ -517,29 +514,38 @@ void InstallPanelInput(PanelQueueRoute route)
     static std::once_flag once;
     std::call_once(once, []
                    {
+                       struct HookPair
+                       {
+                           PVOID* original;
+                           PVOID detour;
+                       };
+                       const HookPair pairs[]{
+                           {reinterpret_cast<PVOID*>(&realClip), reinterpret_cast<PVOID>(OnClip)},
+                           {reinterpret_cast<PVOID*>(&realSetPos), reinterpret_cast<PVOID>(OnSetPos)},
+                           {reinterpret_cast<PVOID*>(&realGetPos), reinterpret_cast<PVOID>(OnGetPos)},
+                           {reinterpret_cast<PVOID*>(&realAsync), reinterpret_cast<PVOID>(OnAsync)},
+                           {reinterpret_cast<PVOID*>(&realKey), reinterpret_cast<PVOID>(OnKey)},
+                           {reinterpret_cast<PVOID*>(&realKeyboard), reinterpret_cast<PVOID>(OnKeyboard)},
+                           {reinterpret_cast<PVOID*>(&realPeekA), reinterpret_cast<PVOID>(OnPeekA)},
+                           {reinterpret_cast<PVOID*>(&realPeekW), reinterpret_cast<PVOID>(OnPeekW)},
+                           {reinterpret_cast<PVOID*>(&realMessageA), reinterpret_cast<PVOID>(OnMessageA)},
+                           {reinterpret_cast<PVOID*>(&realMessageW), reinterpret_cast<PVOID>(OnMessageW)},
+                           {reinterpret_cast<PVOID*>(&realRaw), reinterpret_cast<PVOID>(OnRaw)},
+                           {reinterpret_cast<PVOID*>(&realBuffer), reinterpret_cast<PVOID>(OnBuffer)},
+                           {reinterpret_cast<PVOID*>(&realPostA), reinterpret_cast<PVOID>(OnPostA)},
+                           {reinterpret_cast<PVOID*>(&realPostW), reinterpret_cast<PVOID>(OnPostW)},
+                       };
                        bool cursorReady = true;
-#define INPUT_HOOK(original, detour) cursorReady = Attach(reinterpret_cast<PVOID*>(&(original)), reinterpret_cast<PVOID>(detour)) && cursorReady
-                       INPUT_HOOK(realClip, OnClip);
-                       INPUT_HOOK(realSetPos, OnSetPos);
-                       INPUT_HOOK(realGetPos, OnGetPos);
-                       INPUT_HOOK(realAsync, OnAsync);
-                       INPUT_HOOK(realKey, OnKey);
-                       INPUT_HOOK(realKeyboard, OnKeyboard);
-                       INPUT_HOOK(realPeekA, OnPeekA);
-                       INPUT_HOOK(realPeekW, OnPeekW);
-                       INPUT_HOOK(realMessageA, OnMessageA);
-                       INPUT_HOOK(realMessageW, OnMessageW);
-                       INPUT_HOOK(realRaw, OnRaw);
-                       INPUT_HOOK(realBuffer, OnBuffer);
-                       INPUT_HOOK(realPostA, OnPostA);
-                       INPUT_HOOK(realPostW, OnPostW);
-#undef INPUT_HOOK
+                       for (const auto& pair : pairs)
+                       {
+                           cursorReady = Attach(pair.original, pair.detour) && cursorReady;
+                       }
+
                        const bool showReady = Attach(reinterpret_cast<PVOID*>(&realShow), reinterpret_cast<PVOID>(OnShow));
                        const bool shapeReady = Attach(reinterpret_cast<PVOID*>(&realCursor), reinterpret_cast<PVOID>(OnCursor));
                        nativeHooks = showReady && shapeReady;
                        InstallPanelDirectInput();
-                       if (!cursorReady)
-                           Log(L"Panel input hooks incomplete; cursor takeover may be limited");
+                       (void)cursorReady;
                    });
 }
 bool PanelInputCaptured(HWND window)

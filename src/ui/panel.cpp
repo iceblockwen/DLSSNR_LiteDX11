@@ -328,7 +328,6 @@ Panel::Panel(IDXGISwapChain* swapchain, ID3D11Device* device)
     }
     catch (...)
     {
-        Log(L"DX11 depth tracking installation failed; panel and original rendering retained");
     }
     p.status.graphics = State::Ready;
     if (!p.hwnd)
@@ -484,13 +483,11 @@ void TrackSwapchain(IDXGISwapChain* swap, IUnknown* device) noexcept
         auto panel = std::make_shared<Panel>(swap, device11.Get());
         Global().panels.emplace(swap, std::move(panel));
     }
-    catch (HRESULT hr)
+    catch (HRESULT)
     {
-        GraphicsFailure(hr, L"Unsupported swapchain, window or command queue");
     }
     catch (...)
     {
-        GraphicsFailure(E_FAIL, L"Cannot attach DLSSNR_LiteDX11 panel");
     }
 }
 void DrawSwapchain(IDXGISwapChain* swap, UINT flags) noexcept
@@ -566,18 +563,6 @@ void ReleaseSwapchain(IUnknown* swap) noexcept
             Global().panels.erase(it);
             panel->Close();
         }
-    }
-    catch (...)
-    {
-    }
-}
-void GraphicsFailure(HRESULT hr, const wchar_t* reason) noexcept
-{
-    try
-    {
-        wchar_t detail[640]{};
-        swprintf_s(detail, L"Graphics failure: %s HRESULT=0x%08X", reason, unsigned(hr));
-        Log(detail);
     }
     catch (...)
     {

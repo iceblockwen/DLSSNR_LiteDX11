@@ -159,19 +159,10 @@ struct DenseFlow12::Impl
                 generation->reversed = guides.depthInverted;
                 generation->flip = guides.flipDepth;
                 generation->frames = 0;
-                wchar_t text[160]{};
-                swprintf_s(text, L"flow: depth convention changed (inverted=%u flip=%u); history restarted", unsigned(guides.depthInverted), unsigned(guides.flipDepth));
-                lite::LogVerbose(text);
             }
             generation->settings = settings;
             generation->guides = guides;
             return;
-        }
-        if (generation)
-        {
-            wchar_t text[160]{};
-            swprintf_s(text, L"flow: rebuilt for %ux%u (was %ux%u); all flow textures reallocated", w, h, generation->w, generation->h);
-            lite::LogVerbose(text);
         }
         auto g = std::make_shared<Generation>();
         g->w = w;

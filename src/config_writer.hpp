@@ -16,7 +16,7 @@ class ConfigWriter
 {
   public:
     using Write = std::function<bool(const std::wstring&, const std::wstring&, const std::wstring&)>;
-    explicit ConfigWriter(Write write, std::function<void()> error = {});
+    explicit ConfigWriter(Write write);
     ~ConfigWriter();
     void Queue(const wchar_t* section, const wchar_t* key, const wchar_t* value);
     void Flush(); // Wake the writer, without waiting for disk.
@@ -33,7 +33,6 @@ class ConfigWriter
     std::map<Key, std::wstring> saved;
     std::chrono::steady_clock::time_point due{}, first{};
     Write write;
-    std::function<void()> error;
     bool stopping{}, writing{};
     std::thread worker;
     void Run();

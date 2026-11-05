@@ -14,6 +14,5 @@ struct GraphicsStatus
     wchar_t reason[256]{};
 };
 void AttachFactory(REFIID iid, void** output) noexcept;
-void GraphicsFailure(HRESULT error, const wchar_t* reason) noexcept;
 void Log(const wchar_t* message) noexcept;
 }

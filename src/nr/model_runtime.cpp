@@ -104,7 +104,6 @@ ModelRuntime::ModelRuntime(std::wstring root) : directory(std::move(root))
 }
 HRESULT ModelRuntime::Fail(HRESULT hr, const wchar_t* reason, unsigned result)
 {
-    const bool changed = status.state != State::Failed || status.error != hr || status.ngxResult != result;
     unavailable = true;
     status.error = hr;
     status.ngxResult = result;
@@ -112,12 +111,6 @@ HRESULT ModelRuntime::Fail(HRESULT hr, const wchar_t* reason, unsigned result)
     if (reason != status.reason)
     {
         wcsncpy_s(status.reason, reason, _TRUNCATE);
-    }
-    if (changed)
-    {
-        wchar_t text[384]{};
-        swprintf_s(text, L"NR runtime: %ls (vendor 0x%04X, HRESULT 0x%08lX, NGX 0x%08X)", status.reason, status.vendor, static_cast<unsigned long>(hr), result);
-        Log(text);
     }
     return hr;
 }
@@ -239,12 +232,6 @@ HRESULT ModelRuntime::Initialize(ID3D12Device* d)
     }
     writer.Bind(parameters);
     writer.Discover();
-    if (!writer.Verified())
-    {
-        wchar_t text[192]{};
-        swprintf_s(text, L"NR float setter: slot %d (unverified Lite header fallback)", writer.Slot());
-        Log(text);
-    }
     model = LoadPinned(status.modelPath);
     if (!model)
     {
@@ -323,14 +310,7 @@ unsigned ModelRuntime::Evaluate(ID3D12GraphicsCommandList* list, void* feature)
 unsigned ModelRuntime::Release(void* feature)
 {
     std::lock_guard lock(mutex);
-    const auto rc = release ? unsigned(LiteNrRelease(release, feature)) : 0xBAD0000Bu;
-    if (rc != 1)
-    {
-        wchar_t text[128]{};
-        swprintf_s(text, L"NR feature release failed: NGX=0x%08X", rc);
-        Log(text);
-    }
-    return rc;
+    return release ? unsigned(LiteNrRelease(release, feature)) : 0xBAD0000Bu;
 }
 void ModelRuntime::SetFloat(const char* key, float v)
 {
@@ -357,17 +337,9 @@ void DiscoverModelRuntime()
     try
     {
         Runtime().Discover();
-        const auto s = Runtime().Snapshot();
-        wchar_t text[1400]{};
-        swprintf_s(text, L"NGX core: %ls (version %ls)", s.corePath[0] ? s.corePath : L"Not found", s.coreVersion);
-        Log(text);
-        swprintf_s(text, L"NR model: %ls (version %ls)", s.modelPath[0] ? s.modelPath : L"Not found", s.modelVersion);
-        Log(text);
-        Log(s.reason);
     }
     catch (...)
     {
-        Log(L"NR runtime discovery failed; original game frame preserved");
     }
 }
 }

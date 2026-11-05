@@ -16,8 +16,7 @@ namespace
 {
 std::mutex mutex;
 ModelSettings settings;
-PassStatus last, reported;
-std::string waitReason;
+PassStatus last;
 std::atomic<bool> enabled{}, blocked{};
 std::atomic<UINT64> revision{1};
 float Float(const wchar_t* ini, const wchar_t* key, const wchar_t* fallback)
@@ -118,15 +117,9 @@ void SetModelSettings(const ModelSettings& input, bool persist)
             ++revision;
             blocked = false;
             last = {};
-            reported = {};
-            waitReason.clear();
         }
         settings = s;
         enabled = s.enabled;
-    }
-    if (started)
-    {
-        ReportModelWait("Waiting for captured DX11 NR input");
     }
     if (!persist)
     {
@@ -171,54 +164,15 @@ bool ProcessingActive()
 {
     return PreviewActive() || ModelActive();
 }
-void ReportModelWait(const char* reason)
-{
-    bool changed{};
-    {
-        std::lock_guard lock(mutex);
-        if (!enabled)
-        {
-            return;
-        }
-        const char* value = reason ? reason : "";
-        if (waitReason != value)
-        {
-            waitReason = value;
-            changed = *value != 0;
-        }
-    }
-    if (changed)
-    {
-        wchar_t text[512]{};
-        swprintf_s(text, L"NR waiting: %hs", reason);
-        Log(text);
-    }
-}
 void PublishPass(const PassStatus& s)
 {
-    bool report{};
     {
         std::lock_guard lock(mutex);
-        report = (FAILED(s.error) && (reported.error != s.error || reported.ngxResult != s.ngxResult)) || (s.failedPass && reported.failedPass != s.failedPass);
-        if (report)
-        {
-            reported = s;
-        }
         last = s;
         if (FAILED(s.error) && !s.frameSkipped)
         {
             blocked = true;
         }
-    }
-    if (!FAILED(s.error) && !s.failedPass)
-    {
-        ReportModelWait(s.ready && s.actualPasses ? nullptr : s.reason);
-    }
-    if (report)
-    {
-        wchar_t text[384]{};
-        swprintf_s(text, L"NR: %hs (applied %u, HRESULT 0x%08lX, NGX 0x%08X)", s.reason, s.actualPasses, static_cast<unsigned long>(s.failedPass ? s.modelError : s.error), s.failedPass ? s.modelResult : s.ngxResult);
-        Log(text);
     }
 }
 PassStatus LastPass()
