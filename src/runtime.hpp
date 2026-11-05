@@ -1,15 +1,28 @@
 #pragma once
 #include <windows.h>
 
-namespace lite {
-enum class State : unsigned { Waiting, Ready, Disabled, Failed };
+namespace lite
+{
+enum class State : unsigned
+{
+    Waiting,
+    Ready,
+    Disabled,
+    Failed
+};
 // One switch for every log line in the plugin.
 // Off: no log file is written and no message is formatted.
 // Basic: startup, identity, state changes and failures.
 // Verbose: reserved for per-frame traces; nothing else is gated by it.
-enum class Detail : unsigned { Off = 0, Basic = 1, Verbose = 2 };
+enum class Detail : unsigned
+{
+    Off = 0,
+    Basic = 1,
+    Verbose = 2
+};
 // Fixed-size, versioned snapshot. No pointers into runtime-owned memory.
-struct Status {
+struct Status
+{
     unsigned size = sizeof(Status);
     unsigned version = 1;
     State loader = State::Waiting;

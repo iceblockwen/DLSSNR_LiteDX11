@@ -1,13 +1,15 @@
 #pragma once
-#include "graphics.hpp"
+#include "../graphics.hpp"
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <memory>
 #include <mutex>
 
-namespace lite {
-class Panel {
-public:
+namespace lite
+{
+class Panel
+{
+  public:
     Panel(IDXGISwapChain* swapchain, ID3D11Device* device);
     ~Panel();
     void Draw(UINT presentFlags) noexcept;
@@ -15,7 +17,8 @@ public:
     void AfterResize(HRESULT result);
     void Close();
     void Fail(HRESULT error) noexcept;
-private:
+
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

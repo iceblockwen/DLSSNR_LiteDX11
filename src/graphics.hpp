@@ -2,8 +2,10 @@
 #include "runtime.hpp"
 #include <dxgi1_6.h>
 
-namespace lite {
-struct GraphicsStatus {
+namespace lite
+{
+struct GraphicsStatus
+{
     State graphics = State::Waiting;
     State panel = State::Waiting;
     bool visible = false;

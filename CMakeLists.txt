@@ -91,13 +91,13 @@ add_library(litedx11_runtime SHARED
   src/config_writer.cpp
   src/config_storage.cpp
   src/hooks.cpp
-  src/panel.cpp
-  src/panel_ui.cpp
-  src/panel_gpu.cpp
-  src/ui_widgets.cpp
-  src/input.cpp
-  src/input_keyboard.cpp
-  src/input_directinput.cpp
+  src/ui/panel.cpp
+  src/ui/panel_ui.cpp
+  src/ui/panel_gpu.cpp
+  src/ui/ui_widgets.cpp
+  src/input/input.cpp
+  src/input/input_keyboard.cpp
+  src/input/input_directinput.cpp
   src/nr/caller.cpp
   src/nr/model_runtime.cpp
   src/nr/model_settings.cpp
@@ -112,8 +112,73 @@ target_compile_definitions(litedx11_runtime PRIVATE
   UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN "LITE_VERSION=\"${PROJECT_VERSION}\"")
 target_compile_options(litedx11_runtime PRIVATE /W4 /EHsc /utf-8)
 
-add_library(dxgi SHARED src/proxy.cpp src/dxgi.asm src/dxgi.def)
-target_link_libraries(dxgi PRIVATE user32)
+# Every proxy DLL forwards the system exports through the same generated stubs.
+# <name>.def is the only place an export is declared: the name table, the jump
+# stubs and the resolver table index all come from it at configure time.
+
+# Parse "<export>=Proxy<N> @<ordinal>" lines. Stub numbers must be contiguous and
+# in order, because the generated assembly indexes the target table by stub number.
+function(litedx11_proxy_def def out_names out_count)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${def}")
+  file(STRINGS "${def}" LITEDX11_DEF_LINES)
+  set(names "")
+  set(slot 0)
+  foreach(line IN LISTS LITEDX11_DEF_LINES)
+    if(line MATCHES "^[ \t]*([^=# \t]+)=Proxy([0-9]+)[ \t]*@([0-9]+)")
+      if(NOT CMAKE_MATCH_2 EQUAL slot)
+        message(FATAL_ERROR "${def}: Proxy${CMAKE_MATCH_2} at position ${slot}; stubs must be numbered in order")
+      endif()
+      list(APPEND names "${CMAKE_MATCH_1}")
+      math(EXPR slot "${slot}+1")
+    endif()
+  endforeach()
+  list(LENGTH names count)
+  if(count LESS 1)
+    message(FATAL_ERROR "No exports parsed from ${def}")
+  endif()
+  set(${out_names} "${names}" PARENT_SCOPE)
+  set(${out_count} "${count}" PARENT_SCOPE)
+endfunction()
+
+function(litedx11_proxy_stubs headerDir def resolver table)
+  litedx11_proxy_def("${def}" names count)
+  file(MAKE_DIRECTORY "${headerDir}")
+
+  set(header "// Generated at configure time from ${def}. Never edit.\n#pragma once\n")
+  string(APPEND header "inline constexpr unsigned kProxyExportCount = ${count};\n")
+  string(APPEND header "inline constexpr const char* kProxyExportNames[${count}] = {\n")
+  foreach(export IN LISTS names)
+    string(APPEND header "    \"${export}\",\n")
+  endforeach()
+  string(APPEND header "};\n")
+  file(WRITE "${headerDir}/proxy_exports.generated.hpp" "${header}")
+
+  # Each stub jumps straight to its resolved target; the slow path preserves the
+  # integer and both vector argument registers before calling the resolver.
+  set(asm "EXTERN ${resolver}:PROC\nEXTERN ${table}:QWORD\n.code\n")
+  string(APPEND asm "FORWARD MACRO number\nLOCAL resolved\nProxy&number PROC\n")
+  string(APPEND asm " mov rax, QWORD PTR [${table} + number * 8]\n test rax, rax\n jnz resolved\n")
+  string(APPEND asm " jmp Slow&number\nresolved:\n jmp rax\nProxy&number ENDP\nSlow&number PROC FRAME\n")
+  string(APPEND asm " push rcx\n .allocstack 8\n push rdx\n .allocstack 8\n")
+  string(APPEND asm " push r8\n .allocstack 8\n push r9\n .allocstack 8\n sub rsp, 104\n .allocstack 104\n")
+  string(APPEND asm " .endprolog\n movdqu [rsp+32], xmm0\n movdqu [rsp+48], xmm1\n movdqu [rsp+64], xmm2\n")
+  string(APPEND asm " movdqu [rsp+80], xmm3\n mov ecx, number\n call ${resolver}\n mov r11, rax\n")
+  string(APPEND asm " movdqu xmm0, [rsp+32]\n movdqu xmm1, [rsp+48]\n movdqu xmm2, [rsp+64]\n movdqu xmm3, [rsp+80]\n")
+  string(APPEND asm " add rsp, 104\n pop r9\n pop r8\n pop rdx\n pop rcx\n jmp r11\nSlow&number ENDP\nENDM\n")
+  math(EXPR last "${count}-1")
+  foreach(index RANGE ${last})
+    string(APPEND asm "FORWARD ${index}\n")
+  endforeach()
+  string(APPEND asm "END\n")
+  file(WRITE "${headerDir}/proxy_stubs.generated.asm" "${asm}")
+endfunction()
+
+# Thin DXGI proxy: the 15 system exports keep their real ordinals and are
+# forwarded by the generated stubs; no graphics/UI/model logic lives here.
+set(LITEDX11_DXGI_GEN "${CMAKE_CURRENT_BINARY_DIR}/generated/proxy-dxgi")
+litedx11_proxy_stubs("${LITEDX11_DXGI_GEN}" "${CMAKE_CURRENT_SOURCE_DIR}/src/proxy/dxgi.def" ResolveDxgi DxgiTargets)
+add_library(dxgi SHARED src/proxy/proxy.cpp "${LITEDX11_DXGI_GEN}/proxy_stubs.generated.asm" src/proxy/dxgi.def)
+target_include_directories(dxgi PRIVATE "${LITEDX11_DXGI_GEN}")
 add_dependencies(dxgi litedx11_runtime)
 target_compile_definitions(dxgi PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(dxgi PRIVATE
@@ -130,60 +195,16 @@ set(LITEDX11_ENTRY_TARGETS "")
 function(litedx11_entry name)
   set(def "${CMAKE_CURRENT_SOURCE_DIR}/src/proxy/${name}.def")
   set(headerDir "${CMAKE_CURRENT_BINARY_DIR}/generated/proxy-${name}")
-  file(MAKE_DIRECTORY "${headerDir}")
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${def}")
-  file(STRINGS "${def}" LITEDX11_DEF_LINES)
-  set(LITEDX11_ENTRY_NAMES "")
-  set(LITEDX11_ENTRY_INDICES "")
-  foreach(line IN LISTS LITEDX11_DEF_LINES)
-    if(line MATCHES "^[ \t]*([^=# \t]+)=Proxy([0-9]+)[ \t]*@([0-9]+)")
-      list(APPEND LITEDX11_ENTRY_NAMES "${CMAKE_MATCH_1}")
-      list(APPEND LITEDX11_ENTRY_INDICES "${CMAKE_MATCH_2}")
-    endif()
-  endforeach()
-  list(LENGTH LITEDX11_ENTRY_NAMES count)
-  if(count LESS 1)
-    message(FATAL_ERROR "No exports parsed from ${def}")
-  endif()
-  set(slot 0)
-  foreach(index IN LISTS LITEDX11_ENTRY_INDICES)
-    if(NOT index EQUAL slot)
-      message(FATAL_ERROR "${def}: Proxy${index} at position ${slot}; stubs must be numbered in order")
-    endif()
-    math(EXPR slot "${slot}+1")
-  endforeach()
-  set(header "// Generated at configure time from src/proxy/${name}.def. Never edit.\n#pragma once\n")
-  string(APPEND header "inline constexpr unsigned kProxyExportCount = ${count};\n")
-  string(APPEND header "inline constexpr const wchar_t* kProxyTargetName = L\"${name}.dll\";\n")
-  string(APPEND header "inline constexpr const wchar_t* kProxyOriginalName = L\"${name}-original.dll\";\n")
-  string(APPEND header "inline constexpr const char* kProxyExportNames[${count}] = {\n")
-  foreach(export IN LISTS LITEDX11_ENTRY_NAMES)
-    string(APPEND header "    \"${export}\",\n")
-  endforeach()
-  string(APPEND header "};\n")
-  file(WRITE "${headerDir}/proxy_exports.generated.hpp" "${header}")
+  litedx11_proxy_stubs("${headerDir}" "${def}" ResolveProxy ProxyTargets)
+  file(APPEND "${headerDir}/proxy_exports.generated.hpp"
+"inline constexpr const wchar_t* kProxyTargetName = L\"${name}.dll\";
+inline constexpr const wchar_t* kProxyOriginalName = L\"${name}-original.dll\";
+")
 
-  set(asm "EXTERN ResolveProxy:PROC\nEXTERN ProxyTargets:QWORD\n.code\n")
-  string(APPEND asm "FORWARD MACRO number\nLOCAL resolved\nProxy&number PROC\n")
-  string(APPEND asm " mov rax, QWORD PTR [ProxyTargets + number * 8]\n test rax, rax\n jnz resolved\n")
-  string(APPEND asm " jmp Slow&number\nresolved:\n jmp rax\nProxy&number ENDP\nSlow&number PROC FRAME\n")
-  string(APPEND asm " push rcx\n .allocstack 8\n push rdx\n .allocstack 8\n")
-  string(APPEND asm " push r8\n .allocstack 8\n push r9\n .allocstack 8\n sub rsp, 104\n .allocstack 104\n")
-  string(APPEND asm " .endprolog\n movdqu [rsp+32], xmm0\n movdqu [rsp+48], xmm1\n movdqu [rsp+64], xmm2\n")
-  string(APPEND asm " movdqu [rsp+80], xmm3\n mov ecx, number\n call ResolveProxy\n mov r11, rax\n")
-  string(APPEND asm " movdqu xmm0, [rsp+32]\n movdqu xmm1, [rsp+48]\n movdqu xmm2, [rsp+64]\n movdqu xmm3, [rsp+80]\n")
-  string(APPEND asm " add rsp, 104\n pop r9\n pop r8\n pop rdx\n pop rcx\n jmp r11\nSlow&number ENDP\nENDM\n")
-  math(EXPR last "${count}-1")
-  foreach(index RANGE ${last})
-    string(APPEND asm "FORWARD ${index}\n")
-  endforeach()
-  string(APPEND asm "END\n")
-  file(WRITE "${headerDir}/proxy_${name}.asm" "${asm}")
-
-  add_library(entry_${name} SHARED src/proxy_forward.cpp "${headerDir}/proxy_${name}.asm" "${def}")
+  add_library(entry_${name} SHARED src/proxy/proxy_forward.cpp
+              "${headerDir}/proxy_stubs.generated.asm" "${def}")
   set_target_properties(entry_${name} PROPERTIES OUTPUT_NAME "${name}")
   target_include_directories(entry_${name} PRIVATE "${headerDir}")
-  target_link_libraries(entry_${name} PRIVATE user32)
   add_dependencies(entry_${name} litedx11_runtime)
   target_compile_definitions(entry_${name} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(entry_${name} PRIVATE

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <windows.h>
-namespace lite {
+namespace lite
+{
 // Extracted from Lite's input.cpp. The ImGui caller bypasses game-facing hooks.
-using PanelQueueRoute = bool(*)(MSG&, bool removed);
+using PanelQueueRoute = bool (*)(MSG&, bool removed);
 void InstallPanelInput(PanelQueueRoute route = nullptr);
 bool PanelGameInputBlocked();
 bool PanelInputInternal();
@@ -20,9 +21,11 @@ void PanelMouseMessage(HWND window, UINT message, LPARAM position);
 bool PanelRawInput(HWND window, HRAWINPUT input);
 bool PanelRawHotkey(HWND window, HRAWINPUT input, UINT& message);
 void UpdatePanelPointer(HWND window);
-class PanelInputScope {
+class PanelInputScope
+{
     bool previous;
-public:
+
+  public:
     PanelInputScope();
     ~PanelInputScope();
 };
