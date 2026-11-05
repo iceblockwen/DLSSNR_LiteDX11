@@ -1,0 +1,34 @@
+#pragma once
+#include <windows.h>
+
+namespace lite {
+enum class State : unsigned { Waiting, Ready, Disabled, Failed };
+// One switch for every log line in the plugin.
+// Off: no log file is written and no message is formatted.
+// Basic: startup, identity, state changes and failures.
+// Verbose: reserved for per-frame traces; nothing else is gated by it.
+enum class Detail : unsigned { Off = 0, Basic = 1, Verbose = 2 };
+// Fixed-size, versioned snapshot. No pointers into runtime-owned memory.
+struct Status {
+    unsigned size = sizeof(Status);
+    unsigned version = 1;
+    State loader = State::Waiting;
+    DWORD error = ERROR_SUCCESS;
+    bool enabled = true;
+    bool logging = true;
+    wchar_t pluginPath[1024]{};
+    wchar_t systemPath[1024]{};
+};
+void Initialize(HMODULE plugin, HMODULE system);
+void Fail(DWORD error);
+Status Snapshot();
+// Lock-free hot-path queries; Snapshot copies the full status block.
+bool Enabled();
+bool Usable();
+// Diagnostics.SkipSmallSwapchains: leave chains whose actual width or height is
+// below 100 unwrapped. Read from the creation request, never from the chain.
+bool SkipSmallSwapchains();
+Detail DetailLevel() noexcept;
+// Verbose only. Callers check DetailLevel() first and must not build the message.
+void LogVerbose(const wchar_t* message) noexcept;
+}

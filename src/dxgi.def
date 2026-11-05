@@ -1,0 +1,17 @@
+LIBRARY dxgi
+EXPORTS
+ CreateDXGIFactory=Proxy0 @10
+ CreateDXGIFactory1=Proxy1 @11
+ CreateDXGIFactory2=Proxy2 @12
+ DXGIDeclareAdapterRemovalSupport=Proxy3 @17
+ DXGIGetDebugInterface1=Proxy4 @19
+ CompatString=Proxy5 @2
+ CompatValue=Proxy6 @3
+ DXGID3D10CreateDevice=Proxy7 @13
+ DXGID3D10CreateLayeredDevice=Proxy8 @14
+ DXGID3D10GetLayeredDeviceSize=Proxy9 @15
+ DXGID3D10RegisterLayers=Proxy10 @16
+ DXGID3D10ETWRundown=Proxy11 @21
+ DXGIDumpJournal=Proxy12 @4
+ DXGIReportAdapterConfiguration=Proxy13 @20
+ DXGIDisableVBlankVirtualization=Proxy14 @18

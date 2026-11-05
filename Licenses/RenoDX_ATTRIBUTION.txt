@@ -1,0 +1,35 @@
+Lite HDR composition attribution
+===============================
+Source: Skynizz/optiscaler-dlss5, shader blob a17348b96569077b116ea71b36559307983d3bda
+https://github.com/Skynizz/optiscaler-dlss5/blob/main/OptiScaler/shaders/dlssnr/precompile/dlssnr.hlsl
+Its RenoDX attribution identifies clshortfuse's DLSS5 addon as the source of
+UpgradeToneMap's two-branch highlight restoration, OkLab hue correction and
+luminance/colour blending. These mechanisms are adapted in src/nr/shaders/lite_color.hlsl.
+OkLab matrices are Bjorn Ottosson's published constants.
+Lite retains its existing Hybrid input curve and Gain, uses an equal-luminance
+BT.709 neutral for gamut compression, and explicitly anchors the final luminance
+to the bounded original/model luminance ratio without a dark ratio floor.
+This is not a claim of identical Krish v4.7 or ShortFuse binary behaviour.
+
+MIT License
+
+Copyright (c) 2025 Carlos Lopez Jr.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
