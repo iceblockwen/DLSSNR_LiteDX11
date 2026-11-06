@@ -329,7 +329,6 @@ Panel::Panel(IDXGISwapChain* swapchain, ID3D11Device* device)
     catch (...)
     {
     }
-    p.status.graphics = State::Ready;
     if (!p.hwnd)
     {
         throw E_NOTIMPL;

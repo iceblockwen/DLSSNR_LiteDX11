@@ -7,7 +7,6 @@
 #include "ui/panel.hpp"
 
 #include <atomic>
-#include <new>
 using Microsoft::WRL::ComPtr;
 namespace lite::capture
 {

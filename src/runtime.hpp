@@ -45,6 +45,8 @@ bool Usable();
 // below 100 unwrapped. Read from the creation request, never from the chain.
 bool SkipSmallSwapchains();
 Detail DetailLevel() noexcept;
-// Verbose only. Callers check DetailLevel() first and must not build the message.
+// The log queue and its worker are kept although no call site exists: adding a
+// diagnostic means calling Log without rebuilding the plumbing.
+void Log(const wchar_t* message) noexcept;
 void LogVerbose(const wchar_t* message) noexcept;
 }

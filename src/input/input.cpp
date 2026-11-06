@@ -11,7 +11,6 @@
 #include <wrl/client.h>
 #include <atomic>
 #include <mutex>
-#include <cstring>
 #include <algorithm>
 #include <vector>
 #include <windowsx.h>
@@ -528,17 +527,15 @@ void InstallPanelInput(PanelQueueRoute route)
                            {reinterpret_cast<PVOID*>(&realPostA), reinterpret_cast<PVOID>(OnPostA)},
                            {reinterpret_cast<PVOID*>(&realPostW), reinterpret_cast<PVOID>(OnPostW)},
                        };
-                       bool cursorReady = true;
                        for (const auto& pair : pairs)
                        {
-                           cursorReady = Attach(pair.original, pair.detour) && cursorReady;
+                           (void)Attach(pair.original, pair.detour);
                        }
 
                        const bool showReady = Attach(reinterpret_cast<PVOID*>(&realShow), reinterpret_cast<PVOID>(OnShow));
                        const bool shapeReady = Attach(reinterpret_cast<PVOID*>(&realCursor), reinterpret_cast<PVOID>(OnCursor));
                        nativeHooks = showReady && shapeReady;
                        InstallPanelDirectInput();
-                       (void)cursorReady;
                    });
 }
 bool PanelInputCaptured(HWND window)

@@ -1,6 +1,5 @@
 #pragma once
 #include "frame.hpp"
-#include <vector>
 namespace lite::nr
 {
 struct DenseFlowSettings

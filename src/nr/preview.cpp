@@ -2,7 +2,6 @@
 // Lite shaders/dlssnr.hlsl guide debug modes, separated from the model pass.
 #include "frame.hpp"
 #include "nr_shaders.hpp"
-#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 namespace lite::nr

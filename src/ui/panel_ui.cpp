@@ -563,10 +563,10 @@ void Panel::Impl::BuildUi()
                         ImGui::Text("Runtime HRESULT 0x%08lX | NGX 0x%08X",
                                     static_cast<unsigned long>(model.error), model.ngxResult);
                     }
-                    ImGui::TextDisabled("Log level: %u (0 off, 1 basic, 2 verbose)",
+                    ImGui::TextDisabled("Diagnostics level: %u (0 off, 1 basic, 2 verbose)",
                                         unsigned(DetailLevel()));
                     ItemTip(
-                        "Diagnostics.Level is read at startup. The log sits beside the active configuration and is rewritten once per process run.");
+                        "Diagnostics.Level is read at startup. Level 2 adds the bridge chain timing readout and GPU timestamp queries; no log file is written.");
                 }
                 const auto config = ConfigStorageSnapshot();
                 if (config.error || config.fallbackCause)

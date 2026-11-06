@@ -37,7 +37,6 @@ class DriverParameterWriter
         }
         p = input;
         slot = -1;
-        verified = false;
     }
     void Discover()
     {
@@ -53,7 +52,6 @@ class DriverParameterWriter
             if (p->Get("DLSSNR.Probe", &back) == 1 && back == probe)
             {
                 slot = candidate;
-                verified = true;
                 return;
             }
         }
@@ -71,14 +69,6 @@ class DriverParameterWriter
     {
         reinterpret_cast<UllFn>(Table()[0])(p, key, reinterpret_cast<unsigned long long>(value));
     }
-    int Slot() const
-    {
-        return slot;
-    }
-    bool Verified() const
-    {
-        return verified;
-    }
 
   private:
     using FloatFn = void(__cdecl*)(Parameters*, const char*, float);
@@ -90,7 +80,6 @@ class DriverParameterWriter
     }
     Parameters* p{};
     int slot = -1;
-    bool verified{};
 };
 template <class T>
 T Read(const Parameters* p, const char* key, T fallback = {})

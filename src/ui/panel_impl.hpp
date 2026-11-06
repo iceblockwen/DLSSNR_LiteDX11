@@ -13,7 +13,6 @@
 #include <imgui.h>
 #include <wrl/client.h>
 #include <array>
-#include <memory>
 #include <vector>
 
 namespace lite

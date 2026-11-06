@@ -2,7 +2,6 @@
 #pragma once
 #include "white_point.hpp"
 #include "ngx_parameters.hpp"
-#include <string>
 namespace lite::nr
 {
 // The pass records into the model runtime; there is exactly one implementation,
@@ -26,8 +25,6 @@ struct PassStatus
     unsigned ngxResult{};
     bool ready{}, edited{};
     unsigned readyPasses{}, actualPasses{}, failedPass{};
-    unsigned modelResult{};
-    HRESULT modelError{};
     bool timingValid{};
     float gpuMilliseconds{}, modelMilliseconds{};
     WhiteStatus white;

@@ -7,7 +7,6 @@
 #include <detours/detours.h>
 #include <array>
 #include <cstddef>
-#include <utility>
 #include <vector>
 
 namespace lite::detour

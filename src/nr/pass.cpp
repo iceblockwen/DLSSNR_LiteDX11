@@ -23,10 +23,6 @@ bool Plain(ID3D12Resource* r)
     return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.DepthOrArraySize == 1 &&
            d.MipLevels == 1 && d.SampleDesc.Count == 1 && d.Width && d.Height;
 }
-void Resource(ModelRuntime& backend, const char* key, ID3D12Resource* r)
-{
-    backend.SetResource(key, r);
-}
 // Settings arrive validated by SetModelSettings; only game-provided values are bounded here.
 void Tuning(ModelRuntime& backend, const PassSettings& s)
 {
@@ -518,8 +514,6 @@ struct PassExecutor12::Impl
                 status.gpuExposureValid = false;
                 status.readyPasses = status.failedPass = 0;
                 status.timingValid = false;
-                status.modelError = S_OK;
-                status.modelResult = 0;
                 return refuse(E_ABORT, "NR recording discarded; history rebuild on next frame");
             }
             if (!previous->input.ticket->Complete() && !canFollow())
@@ -680,8 +674,6 @@ struct PassExecutor12::Impl
             white.Reset();
             ++whiteEpoch;
             frameIndex = 0;
-            status.modelResult = 0;
-            status.modelError = S_OK;
             status.timingValid = false;
         }
         if (!SameTuning(context->tuning, settings))
@@ -690,8 +682,6 @@ struct PassExecutor12::Impl
             context->tuning = settings;
             context->failed = false;
             frameIndex = 0;
-            status.modelResult = 0;
-            status.modelError = S_OK;
             status.timingValid = false;
         }
         auto ctx = context;
@@ -735,7 +725,7 @@ struct PassExecutor12::Impl
         backend.SetUnsigned("CreationNodeMask", 1u);
         backend.SetUnsigned("VisibilityNodeMask", 1u);
         Tuning(backend, settings);
-        Resource(backend, "DLSSNR.ControlMask", nullptr);
+        backend.SetResource("DLSSNR.ControlMask", nullptr);
         if (!ctx->layer)
         {
             // Validate resources before letting the model record initialization.
@@ -748,13 +738,12 @@ struct PassExecutor12::Impl
             previous = recording;
             layer->first = true; // creation frame skips temporal evaluation
             const auto rc = backend.Create(list, &layer->feature);
-            status.modelResult = status.ngxResult = rc;
+            status.ngxResult = rc;
             status.ready = false;
             status.reason = "NR layer created; waiting for GPU submission and completion";
             if (rc != 1 || !layer->feature)
             {
                 layer->failed = true;
-                status.modelError = E_FAIL;
                 status.failedPass = 1;
                 status.reason = "NR feature creation failed; original frame preserved";
                 ctx->failed = true;
@@ -982,13 +971,13 @@ struct PassExecutor12::Impl
             auto& layer = ctx->layer;
             auto* answer = ctx->answer.Get();
             // Estimator distrust is a Debug guide, not the NR application mask.
-            Resource(backend, "DLSSNR.Color", input);
-            Resource(backend, "DLSSNR.Output", answer);
-            Resource(backend, "DLSSNR.ControlMask", nullptr);
+            backend.SetResource("DLSSNR.Color", input);
+            backend.SetResource("DLSSNR.Output", answer);
+            backend.SetResource("DLSSNR.ControlMask", nullptr);
             Tuning(backend, settings);
             backend.SetUnsigned("DLSSNR.Reset", layer->first ? 1u : 0u);
-            Resource(backend, "DLSSNR.Depth", guides[0]);
-            Resource(backend, "DLSSNR.MVec", guides[1]);
+            backend.SetResource("DLSSNR.Depth", guides[0]);
+            backend.SetResource("DLSSNR.MVec", guides[1]);
             backend.SetUnsigned("DLSSNR.DepthInverted", frame.guides.depthInverted ? 1u : 0u);
             backend.SetFloat("DLSSNR.MVecScaleX", frame.guides.motionScaleX);
             backend.SetFloat("DLSSNR.MVecScaleY", frame.guides.motionScaleY);
@@ -1009,7 +998,7 @@ struct PassExecutor12::Impl
                 list->EndQuery(recording->timing->timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2);
             }
             const auto rc = backend.Evaluate(list, layer->feature);
-            status.modelResult = status.ngxResult = rc;
+            status.ngxResult = rc;
             if (recording->timing)
             {
                 list->EndQuery(recording->timing->timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 3);
@@ -1018,7 +1007,6 @@ struct PassExecutor12::Impl
             if (rc != 1)
             {
                 layer->failed = true;
-                status.modelError = E_FAIL;
                 status.failedPass = 1;
                 status.readyPasses = 0;
             }

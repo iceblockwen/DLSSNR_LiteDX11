@@ -6,7 +6,6 @@ namespace lite
 {
 struct GraphicsStatus
 {
-    State graphics = State::Waiting;
     State panel = State::Waiting;
     bool visible = false;
     unsigned width = 0, height = 0;
@@ -14,5 +13,4 @@ struct GraphicsStatus
     wchar_t reason[256]{};
 };
 void AttachFactory(REFIID iid, void** output) noexcept;
-void Log(const wchar_t* message) noexcept;
 }
