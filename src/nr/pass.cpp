@@ -270,6 +270,10 @@ struct PassExecutor12::Impl
     std::shared_ptr<Recording> previous;
     std::vector<std::shared_ptr<Recording>> inFlight;
     std::vector<std::shared_ptr<TimingResources>> timingPool;
+    // Shader-visible heaps retired by a completed fence. Keeping a few means a
+    // steady-state frame never creates one, and never waits for the GPU either.
+    static constexpr size_t kHeapPoolMax = 4;
+    std::vector<ComPtr<ID3D12DescriptorHeap>> heapPool;
     mutable std::mutex mutex;
     PassStatus status;
     UINT64 tick{}, frameIndex{};
@@ -586,7 +590,6 @@ struct PassExecutor12::Impl
             status.gpuExposureValid = false;
         }
         white.Resolve(settings.white, exposure, 0);
-        ComPtr<ID3D12DescriptorHeap> reusableHeap;
         auto retire = [&](const std::shared_ptr<Recording>& completed)
         {
             if (settings.gpuTiming && completed->context == context)
@@ -623,9 +626,9 @@ struct PassExecutor12::Impl
                     status.gpuDivisor = divisor;
                 }
             }
-            if (completed->heap)
+            if (completed->heap && heapPool.size() < kHeapPoolMax)
             {
-                reusableHeap = completed->heap;
+                heapPool.push_back(std::move(completed->heap));
             }
             completed->RetireInputs();
         };
@@ -781,7 +784,11 @@ struct PassExecutor12::Impl
                 status.timingValid = false;
             }
         } // optional diagnostics cannot disable NR
-        recording->heap = reusableHeap;
+        if (!heapPool.empty())
+        {
+            recording->heap = std::move(heapPool.back());
+            heapPool.pop_back();
+        }
         D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 30,
                                       D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
         if (!recording->heap)
@@ -969,6 +976,7 @@ struct PassExecutor12::Impl
         bool readable{};
         ID3D12Resource* input = ctx->proxy.Get();
         ID3D12Resource* final{};
+        BarrierBatch entry;
         if (status.readyPasses)
         {
             auto& layer = ctx->layer;
@@ -1016,7 +1024,7 @@ struct PassExecutor12::Impl
             }
             else
             {
-                Transition(list, answer, UAV, SRV);
+                entry.Add(answer, UAV, SRV);
                 readable = true;
                 final = answer;
                 layer->first = false;
@@ -1026,15 +1034,17 @@ struct PassExecutor12::Impl
         if (final)
         {
             srv(7, final);
+            // The answer/SRV swap and the resolve input transition are adjacent, so
+            // they go out as one barrier array before the resolve dispatch.
             if (frame.colorOutput)
             {
-                Transition(list, resolveTarget, D3D12_RESOURCE_STATE_COMMON,
-                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                entry.Add(resolveTarget, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             }
             else if (ctx->outputReadable)
             {
-                Transition(list, ctx->output.Get(), SRV, UAV);
+                entry.Add(ctx->output.Get(), SRV, UAV);
             }
+            entry.Flush(list);
             c.mode = 1;
             run(6);
             Transition(list, resolveTarget, UAV, SRV);
@@ -1055,11 +1065,13 @@ struct PassExecutor12::Impl
             status.error = E_FAIL;
             status.reason = "First NR layer evaluation failed; original frame preserved";
         }
+        BarrierBatch tail;
         if (readable)
         {
-            Transition(list, ctx->answer.Get(), SRV, UAV);
+            tail.Add(ctx->answer.Get(), SRV, UAV);
         }
-        Transition(list, ctx->proxy.Get(), SRV, UAV);
+        tail.Add(ctx->proxy.Get(), SRV, UAV);
+        tail.Flush(list);
         if (recording->timing)
         {
             list->EndQuery(recording->timing->timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);

@@ -75,6 +75,39 @@ DXGI_FORMAT ViewFormat(DXGI_FORMAT format, bool depth = false);
 DXGI_FORMAT StorageFormat(DXGI_FORMAT format);
 bool ShaderViewCompatible(DXGI_FORMAT format, bool depth = false);
 void Transition(ID3D12GraphicsCommandList*, ID3D12Resource*, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES);
+// Collects transitions so adjacent ones reach the command list as one barrier
+// array. Order inside the array is the order the barriers take effect, so a
+// batch is only equivalent to the individual calls when nothing is recorded
+// between them.
+class BarrierBatch
+{
+  public:
+    void Add(ID3D12Resource* r, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+    {
+        if (!r || before == after || count == capacity)
+        {
+            return;
+        }
+        auto& b = barriers[count++];
+        b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
+    }
+    void Flush(ID3D12GraphicsCommandList* list)
+    {
+        if (!count)
+        {
+            return;
+        }
+        list->ResourceBarrier(count, barriers);
+        count = 0;
+    }
+
+  private:
+    static constexpr UINT capacity = 8;
+    D3D12_RESOURCE_BARRIER barriers[capacity]{};
+    UINT count{};
+};
 // Independent of NGX and of the panel. Descriptors/output belong to one GPU recording.
 class Preview12
 {
