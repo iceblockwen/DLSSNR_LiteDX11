@@ -39,15 +39,36 @@ void Tuning(ModelRuntime& backend, const PassSettings& s)
     backend.SetUnsigned("DLSSNR.UseAutoMask", s.autoMask ? 1u : 0u);
     backend.SetUnsigned("DLSSNR.UICorrection", s.uiCorrection ? 1u : 0u);
 }
-void Region(ModelRuntime& backend, const char* prefix, unsigned w, unsigned h, unsigned x = 0,
-            unsigned y = 0)
+// One entry per NGX region name. The key strings are constants, so the per-frame
+// parameter pass never builds a std::string.
+struct RegionKeys
 {
-    std::string k = "DLSSNR.";
-    k += prefix;
-    backend.SetUnsigned((k + "SubrectBaseX").c_str(), x);
-    backend.SetUnsigned((k + "SubrectBaseY").c_str(), y);
-    backend.SetUnsigned((k + "SubrectWidth").c_str(), w);
-    backend.SetUnsigned((k + "SubrectHeight").c_str(), h);
+    const char* x;
+    const char* y;
+    const char* w;
+    const char* h;
+};
+enum class RegionKind : unsigned
+{
+    Color,
+    Output,
+    Depth,
+    MVec
+};
+constexpr RegionKeys kRegionKeys[]{
+    {"DLSSNR.ColorSubrectBaseX", "DLSSNR.ColorSubrectBaseY", "DLSSNR.ColorSubrectWidth", "DLSSNR.ColorSubrectHeight"},
+    {"DLSSNR.OutputSubrectBaseX", "DLSSNR.OutputSubrectBaseY", "DLSSNR.OutputSubrectWidth",
+     "DLSSNR.OutputSubrectHeight"},
+    {"DLSSNR.DepthSubrectBaseX", "DLSSNR.DepthSubrectBaseY", "DLSSNR.DepthSubrectWidth", "DLSSNR.DepthSubrectHeight"},
+    {"DLSSNR.MVecSubrectBaseX", "DLSSNR.MVecSubrectBaseY", "DLSSNR.MVecSubrectWidth", "DLSSNR.MVecSubrectHeight"},
+};
+void Region(ModelRuntime& backend, RegionKind kind, unsigned w, unsigned h, unsigned x = 0, unsigned y = 0)
+{
+    const auto& keys = kRegionKeys[unsigned(kind)];
+    backend.SetUnsigned(keys.x, x);
+    backend.SetUnsigned(keys.y, y);
+    backend.SetUnsigned(keys.w, w);
+    backend.SetUnsigned(keys.h, h);
 }
 ComPtr<ID3D12Resource> Texture(ID3D12Device* d, unsigned w, unsigned h, DXGI_FORMAT f)
 {
@@ -963,12 +984,12 @@ struct PassExecutor12::Impl
             backend.SetUnsigned("DLSSNR.DepthInverted", frame.guides.depthInverted ? 1u : 0u);
             backend.SetFloat("DLSSNR.MVecScaleX", frame.guides.motionScaleX);
             backend.SetFloat("DLSSNR.MVecScaleY", frame.guides.motionScaleY);
-            Region(backend, "Color", ctx->w, ctx->h);
-            Region(backend, "Output", ctx->w, ctx->h);
+            Region(backend, RegionKind::Color, ctx->w, ctx->h);
+            Region(backend, RegionKind::Output, ctx->w, ctx->h);
             for (unsigned g = 1; g < 3; ++g)
             {
                 auto d = frame.resources[g]->GetDesc();
-                Region(backend, g == 1 ? "Depth" : "MVec",
+                Region(backend, g == 1 ? RegionKind::Depth : RegionKind::MVec,
                        frame.guides.width[g] ? frame.guides.width[g] : unsigned(d.Width),
                        frame.guides.height[g] ? frame.guides.height[g] : d.Height,
                        frame.guides.originX[g], frame.guides.originY[g]);
