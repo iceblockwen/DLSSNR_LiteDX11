@@ -34,6 +34,7 @@ struct LogQueue
     std::condition_variable ready;
     std::deque<std::wstring> lines;
     std::wstring path;
+    size_t dropped{};
     bool started{};
     void Run()
     {
@@ -47,6 +48,14 @@ struct LogQueue
                        });
             auto batch = std::move(lines);
             lines.clear();
+            if (dropped)
+            {
+                wchar_t note[128]{};
+                swprintf_s(note, L"Log queue saturated; %llu earlier line(s) dropped",
+                           static_cast<unsigned long long>(dropped));
+                batch.emplace_front(note);
+                dropped = 0;
+            }
             // One file per process run: the previous session's events never mix in.
             if (!file)
             {
@@ -82,6 +91,8 @@ void Initialize(HMODULE plugin, HMODULE system)
         GetModuleFileNameW(plugin, status.pluginPath, 1024);
         GetModuleFileNameW(system, status.systemPath, 1024);
         const auto folder = std::filesystem::path(status.pluginPath).parent_path();
+        // Path only: the queue opens the file on its first line, so a run that
+        // never logs leaves nothing behind.
         {
             std::lock_guard logLock(Logs().mutex);
             Logs().path = (folder / L"DLSSNR_LiteDX11.log").wstring();
@@ -161,19 +172,11 @@ void LogFormat(Detail level, const wchar_t* format, ...) noexcept
     va_end(args);
     Log(text);
 }
-void LogVerbose(const wchar_t* message) noexcept
-{
-    if (detail.load(std::memory_order_relaxed) < 2)
-    {
-        return;
-    }
-    Log(message);
-}
 void Log(const wchar_t* message) noexcept
 {
     try
     {
-        if (!message)
+        if (!message || !*message)
         {
             return;
         }
@@ -184,8 +187,13 @@ void Log(const wchar_t* message) noexcept
         auto& queue = Logs();
         {
             std::lock_guard lock(queue.mutex);
-            if (queue.path.empty() || queue.lines.size() >= 4096)
+            if (queue.path.empty())
             {
+                return;
+            }
+            if (queue.lines.size() >= 4096)
+            {
+                ++queue.dropped;
                 return;
             }
             queue.lines.emplace_back(message);

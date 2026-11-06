@@ -13,7 +13,7 @@ enum class State : unsigned
 // One switch for every log line in the plugin.
 // Off: no log file is written and no message is formatted.
 // Basic: startup, identity, state changes and failures.
-// Verbose: reserved for per-frame traces; nothing else is gated by it.
+// Verbose: additional diagnostics.
 enum class Detail : unsigned
 {
     Off = 0,
@@ -47,5 +47,4 @@ Detail DetailLevel() noexcept;
 // Formats only when the current level is at least `level`, so Off builds no string.
 void LogFormat(Detail level, const wchar_t* format, ...) noexcept;
 void Log(const wchar_t* message) noexcept;
-void LogVerbose(const wchar_t* message) noexcept;
 }
