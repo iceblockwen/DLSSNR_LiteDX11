@@ -350,10 +350,6 @@ bool Block()
 {
     return owner.load() && !internal;
 }
-bool MouseKey(int key)
-{
-    return key == VK_LBUTTON || key == VK_RBUTTON || key == VK_MBUTTON || key == VK_XBUTTON1 || key == VK_XBUTTON2;
-}
 BOOL WINAPI OnClip(const RECT* rect)
 {
     if (Block())
@@ -476,9 +472,6 @@ bool Attach(PVOID* original, PVOID detour)
         {
             DetourTransactionAbort();
         }
-    }
-    if (error != NO_ERROR)
-    {
     }
     return error == NO_ERROR;
 }

@@ -15,7 +15,6 @@ bool ModelRequested();
 bool ModelActive();
 bool ProcessingActive();
 void PublishPass(const PassStatus&);
-void ReportModelWait(const char* reason);
 PassStatus LastPass();
 UINT64 ModelRevision();
 }

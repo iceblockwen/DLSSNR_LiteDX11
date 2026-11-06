@@ -33,7 +33,6 @@ struct NativeCaptureState
     UINT64 revision{};
     UINT64 modelStream{};
     InputOrigin modelOrigin = InputOrigin::Unknown;
-    HRESULT modelBridgeError = S_OK;
 };
 struct Registry
 {
@@ -46,7 +45,6 @@ struct Registry
     float bridgeChainMs{};
     std::map<ID3D11DeviceContext*, NativeCaptureState> native;
     std::set<const void*> visiblePanels;
-    HRESULT reportedCapture = S_FALSE;
 };
 Registry& Global()
 {
@@ -74,8 +72,6 @@ void Report(HRESULT hr)
                              : hr == E_INVALIDARG ? L"Invalid resource, dimensions or subrect"
                              : FAILED(hr)         ? L"Resource capture/bridge failed"
                                                   : L"Frame resources captured";
-    auto& r = Global();
-    r.reportedCapture = hr;
     wcsncpy_s(s.reason, message, _TRUNCATE);
 }
 void Info(ID3D11Resource* const* resources, const Guides& guides,
@@ -316,7 +312,6 @@ HRESULT Model11(NativeCaptureState& native, ID3D11DeviceContext* context, const 
             }
             return rc;
         });
-    native.modelBridgeError = hr;
     if (hr == S_OK && previewRecorded && native.modelBridge->PreviewImage())
     {
         native.modelPreviewLatest = true;

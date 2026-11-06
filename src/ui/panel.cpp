@@ -419,12 +419,10 @@ void Panel::Draw(UINT flags) noexcept
             p.dpiScale = scale;
             ImGui::GetIO().FontGlobalScale = scale / p.fontDpiScale;
         }
-        p.renderStage = L"renderer initialization";
         if (!p.rendererReady)
         {
             p.InitRenderer();
         }
-        p.renderStage = L"DX11 panel draw";
         p.Draw11();
     }
     catch (HRESULT hr)
@@ -439,7 +437,6 @@ void Panel::Draw(UINT flags) noexcept
 void Panel::BeforeResize()
 {
     auto& p = *impl;
-    p.renderStage = L"swapchain resize preparation";
     p.DestroyRenderer();
     nr::RetireCompleted();
     nr::ReleaseNativeCapture(p.device11.Get());
@@ -447,7 +444,6 @@ void Panel::BeforeResize()
 void Panel::AfterResize(HRESULT hr)
 {
     auto& p = *impl;
-    p.renderStage = L"swapchain resize completion";
     DXGI_SWAP_CHAIN_DESC desc{};
     if (SUCCEEDED(p.swap->GetDesc(&desc)))
     {

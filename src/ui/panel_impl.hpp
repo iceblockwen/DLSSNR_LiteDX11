@@ -77,8 +77,6 @@ struct Panel::Impl
     bool previewSelected{};
     UINT previewWidth{}, previewHeight{};
     bool previewDisplayed{};
-    // Where a failure happened; printed by Failure().
-    const wchar_t* renderStage = L"panel input/window callback";
     // Committed on edit end, never per frame of a drag.
     void CommitFlowOptions();
     bool CommitTuning(nr::ModelSettings* target = nullptr);

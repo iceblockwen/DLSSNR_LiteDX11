@@ -99,9 +99,6 @@ void Initialize(HMODULE plugin, HMODULE system)
     nr::ConfigureModel(ini.c_str());
     // Read at startup: it decides whether any depth/motion hook is installed at all.
     nr::SetNativeCaptureEnabled(GetPrivateProfileIntW(L"NeuralRendering", L"NativeCapture", 0, ini.c_str()) != 0);
-    if (nr::ModelRequested() && !nr::NativeCaptureEnabled())
-    {
-    }
     auto flowFloat = [&](const wchar_t* key, const wchar_t* initial)
     {
         wchar_t value[64]{};
