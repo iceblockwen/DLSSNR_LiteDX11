@@ -3,7 +3,6 @@
 #include "frame.hpp"
 #include "nr_shaders.hpp"
 #include <cmath>
-#include <stdexcept>
 namespace lite::nr
 {
 DXGI_FORMAT ViewFormat(DXGI_FORMAT f, bool depth)
@@ -101,10 +100,6 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* r, D3D12_RESOUR
     b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
     list->ResourceBarrier(1, &b);
 }
-namespace
-{
-
-}
 Preview12::Preview12(ID3D12Device* d) : device(d)
 {
     D3D12_DESCRIPTOR_RANGE ranges[2]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0},
@@ -113,7 +108,7 @@ Preview12::Preview12(ID3D12Device* d) : device(d)
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable = {2, ranges};
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants = {0, 0, 12};
+    params[1].Constants = {0, 0, 13};
     D3D12_ROOT_SIGNATURE_DESC desc{2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
     ComPtr<ID3DBlob> code, errors;
     ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &code, &errors));
@@ -122,7 +117,9 @@ Preview12::Preview12(ID3D12Device* d) : device(d)
     pso.pRootSignature = root.Get();
     pso.CS = {litePreviewShader, sizeof(litePreviewShader)};
     ThrowIfFailed(device->CreateComputePipelineState(&pso, IID_PPV_ARGS(&pipeline)));
-    D3D12_DESCRIPTOR_HEAP_DESC h{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+    // One (SRV, UAV) pair per tile: a descriptor cannot be rewritten between the
+    // dispatches of a list that is only executed later.
+    D3D12_DESCRIPTOR_HEAP_DESC h{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
     ThrowIfFailed(device->CreateDescriptorHeap(&h, IID_PPV_ARGS(&heap)));
 }
 HRESULT Preview12::Record(ID3D12GraphicsCommandList* list, const Frame12& frame)
@@ -159,7 +156,7 @@ HRESULT Preview12::Record(ID3D12GraphicsCommandList* list, const Frame12& frame)
             return hr;
         }
     }
-    Transition(list, image.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    Transition(list, image.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     HRESULT error = S_OK;
     for (unsigned n = 0; n < 3; ++n)
     {
@@ -169,47 +166,29 @@ HRESULT Preview12::Record(ID3D12GraphicsCommandList* list, const Frame12& frame)
         {
             continue;
         }
-        if (!tiles[n])
-        {
-            tiles[n] = std::make_unique<Preview12>(device.Get());
-        }
-        // Tile 2 keeps the caller's display scale; the others are shown at 1:1.
-        auto guides = frame.guides;
-        if (n != 2)
-        {
-            guides.displayScale = 1;
-        }
-        const auto hr = tiles[n]->RecordTile(list, frame.resources[n].Get(), guides, frame.generatedMotion,
-                                             frame.frameTimeMs, n, w, h);
+        const auto hr = Tile(list, frame, n, w, h);
         if (FAILED(hr))
         {
             error = hr;
-            continue;
         }
-        auto* tile = tiles[n]->image.Get();
-        Transition(list, tile, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        D3D12_TEXTURE_COPY_LOCATION from{}, to{};
-        from.pResource = tile;
-        to.pResource = image.Get();
-        from.Type = to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        list->CopyTextureRegion(&to, w * n, 0, 0, &from, nullptr);
-        Transition(list, tile, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
-    Transition(list, image.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(list, image.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     return error;
 }
-// One tile: colour (0), depth (1) or motion vectors (2), scaled to the caller's extents.
-HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, ID3D12Resource* source, const Guides& g,
-                              bool generatedMotion, float frameTimeMs, unsigned input, unsigned outputWidth,
-                              unsigned outputHeight)
+// One tile: colour (0), depth (1) or motion vectors (2), written into its own atlas subrect.
+HRESULT Preview12::Tile(ID3D12GraphicsCommandList* list, const Frame12& frame, unsigned input, unsigned ow,
+                        unsigned oh)
 {
-    if (!list || input > 2)
-    {
-        return E_INVALIDARG;
-    }
+    auto* source = frame.resources[input].Get();
     if (!source)
     {
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+    auto g = frame.guides;
+    // Tile 2 keeps the caller's display scale; the others are shown at 1:1.
+    if (input != 2)
+    {
+        g.displayScale = 1;
     }
     const auto desc = source->GetDesc();
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.DepthOrArraySize != 1 ||
@@ -230,26 +209,10 @@ HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, ID3D12Resource* s
     {
         return E_INVALIDARG;
     }
-    const unsigned ow = outputWidth ? outputWidth : sw, oh = outputHeight ? outputHeight : sh;
-    if (!image || image->GetDesc().Width != ow || image->GetDesc().Height != oh)
-    {
-        auto out = desc;
-        out.Alignment = 0;
-        out.Width = ow;
-        out.Height = oh;
-        out.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        out.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        out.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        D3D12_HEAP_PROPERTIES properties{};
-        properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-        auto hr = device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &out,
-                                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&image));
-        if (FAILED(hr))
-        {
-            return hr;
-        }
-    }
+    // Each tile owns one (SRV, UAV) pair in the recording-wide atlas heap.
     auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
+    const auto stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cpu.ptr += uint64_t(2 * input) * stride;
     D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
     srv.Format = ViewFormat(desc.Format, input == 1);
     if (input == 2 && srv.Format != DXGI_FORMAT_R16G16_FLOAT && srv.Format != DXGI_FORMAT_R32G32_FLOAT &&
@@ -272,7 +235,7 @@ HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, ID3D12Resource* s
         return E_NOTIMPL;
     }
     device->CreateShaderResourceView(source, &srv, cpu);
-    cpu.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cpu.ptr += stride;
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
     uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -280,22 +243,24 @@ HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, ID3D12Resource* s
     struct Constants
     {
         unsigned mode, ox, oy, sw, sh, ow, oh, flags;
-        float sx, sy, gain, pad;
+        float sx, sy, gain, frameTime;
+        unsigned tileX;
     };
     const Constants c{input + 1u, g.originX[input], g.originY[input], sw, sh, ow, oh,
                       (g.depthInverted ? 1u : 0u) | (g.flipDepth ? 2u : 0u) | (g.depthContrast ? 4u : 0u) |
-                          (generatedMotion ? 8u : 0u),
+                          (frame.generatedMotion ? 8u : 0u),
                       g.motionScaleX, g.motionScaleY, g.displayScale,
-                      std::isfinite(frameTimeMs) && frameTimeMs > 0 ? frameTimeMs : 16.6667f};
-    Transition(list, image.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                      std::isfinite(frame.frameTimeMs) && frame.frameTimeMs > 0 ? frame.frameTimeMs : 16.6667f,
+                      ow * input};
     auto* h = heap.Get();
     list->SetDescriptorHeaps(1, &h);
     list->SetPipelineState(pipeline.Get());
     list->SetComputeRootSignature(root.Get());
-    list->SetComputeRootDescriptorTable(0, heap->GetGPUDescriptorHandleForHeapStart());
-    list->SetComputeRoot32BitConstants(1, 12, &c, 0);
+    auto table = heap->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += uint64_t(2 * input) * stride;
+    list->SetComputeRootDescriptorTable(0, table);
+    list->SetComputeRoot32BitConstants(1, 13, &c, 0);
     list->Dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
-    Transition(list, image.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     return S_OK;
 }
 HRESULT RecordDebug(Bridge11& bridge, const Input11& input)

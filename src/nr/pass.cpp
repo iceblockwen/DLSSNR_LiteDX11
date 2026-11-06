@@ -6,6 +6,7 @@
 #include <mutex>
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 #include <vector>
 namespace lite::nr
 {
@@ -145,6 +146,7 @@ struct Context
     ComPtr<ID3D12Resource> guides[2];
     std::shared_ptr<Layer> layer;
     bool failed{}, outputReadable{};
+    bool encoded = true; // colour goes through the HDR proxy instead of the game texture
 };
 struct TimingResources
 {
@@ -281,11 +283,31 @@ struct PassExecutor12::Impl
     unsigned guideWidth[2]{}, guideHeight[2]{};
     Guides previousGuides;
     bool haveGuides{};
+    // Per-input verdict of the identity, device and format checks. A bridge keeps
+    // its textures until the slot is rebuilt, so this only invalidates there.
+    struct Checked
+    {
+        ID3D12Resource* resource{};
+        DXGI_FORMAT format{};
+        UINT64 width{};
+        UINT height{};
+        HRESULT verdict = S_OK;
+        const char* reason{};
+    };
+    std::array<Checked, 3> checked{};
     // Constant per device; queried once instead of on every descriptor write.
     UINT viewStride{};
     explicit Impl(ID3D12Device* d, ModelRuntime& b) : device(d), backend(b)
     {
         viewStride = d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+    // Restart temporal state without freeing the feature or its working textures.
+    void RestartHistory()
+    {
+        if (context && context->layer)
+        {
+            context->layer->first = true;
+        }
     }
     std::shared_ptr<TimingResources> AcquireTiming()
     {
@@ -359,13 +381,7 @@ struct PassExecutor12::Impl
             status.frameSkipped = true;
             status.failedPass = 0;
             status.ngxResult = 0;
-            if (context)
-            {
-                if (context->layer)
-                {
-                    context->layer->first = true;
-                }
-            }
+            RestartHistory();
             return hr;
         };
         if (!list || !frame.ticket)
@@ -399,40 +415,58 @@ struct PassExecutor12::Impl
             status.reason = "NGX capability block unavailable";
             return E_POINTER;
         }
-        for (unsigned n = 0; n < 3; ++n)
+        // A bridge slot keeps its twins for as long as the pointer and description
+        // stay the same, so the COM and format checks run once per distinct input.
+        auto inspect = [&](unsigned n, ID3D12Resource* r, const D3D12_RESOURCE_DESC& desc)
         {
-            auto* r = frame.resources[n].Get();
             if (!Plain(r))
             {
-                return refuse(E_NOTIMPL, "NR needs color, depth and motion textures");
+                return std::pair{HRESULT(E_NOTIMPL), "NR needs color, depth and motion textures"};
             }
             ComPtr<ID3D12Device> owner;
             ThrowIfFailed(r->GetDevice(IID_PPV_ARGS(&owner)));
             if (owner.Get() != device.Get())
             {
-                return refuse(E_INVALIDARG, "NR resource belongs to another device");
+                return std::pair{HRESULT(E_INVALIDARG), "NR resource belongs to another device"};
             }
-            auto desc = r->GetDesc();
-            auto& g = frame.guides;
-            const auto w = g.width[n] ? g.width[n] : unsigned(desc.Width),
-                       h = g.height[n] ? g.height[n] : desc.Height;
             if ((desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) ||
                 !ShaderViewCompatible(desc.Format, n == 1))
             {
-                return refuse(E_NOTIMPL, "NR input has no compatible shader view");
+                return std::pair{HRESULT(E_NOTIMPL), "NR input has no compatible shader view"};
             }
             const auto view = ViewFormat(desc.Format, n == 1);
             if (n == 2 && view != DXGI_FORMAT_R16G16_FLOAT && view != DXGI_FORMAT_R32G32_FLOAT &&
                 view != DXGI_FORMAT_R16G16_SNORM)
             {
-                return refuse(E_NOTIMPL, "Unsupported motion-vector encoding");
+                return std::pair{HRESULT(E_NOTIMPL), "Unsupported motion-vector encoding"};
             }
             if (n == 1 && view != DXGI_FORMAT_R32_FLOAT && view != DXGI_FORMAT_R16_FLOAT &&
                 view != DXGI_FORMAT_R16_UNORM && view != DXGI_FORMAT_R24_UNORM_X8_TYPELESS &&
                 view != DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)
             {
-                return refuse(E_NOTIMPL, "Unsupported depth encoding");
+                return std::pair{HRESULT(E_NOTIMPL), "Unsupported depth encoding"};
             }
+            return std::pair{HRESULT(S_OK), static_cast<const char*>(nullptr)};
+        };
+        for (unsigned n = 0; n < 3; ++n)
+        {
+            auto* r = frame.resources[n].Get();
+            auto desc = r->GetDesc();
+            auto& known = checked[n];
+            if (known.resource != r || known.format != desc.Format || known.width != desc.Width ||
+                known.height != desc.Height)
+            {
+                known = {r, desc.Format, desc.Width, desc.Height};
+                std::tie(known.verdict, known.reason) = inspect(n, r, desc);
+            }
+            if (FAILED(known.verdict))
+            {
+                return refuse(known.verdict, known.reason);
+            }
+            // The game declares these every frame, so the bounds stay per frame.
+            auto& g = frame.guides;
+            const auto w = g.width[n] ? g.width[n] : unsigned(desc.Width),
+                       h = g.height[n] ? g.height[n] : desc.Height;
             if (g.originX[n] > desc.Width || w > desc.Width - g.originX[n] ||
                 g.originY[n] > desc.Height || h > desc.Height - g.originY[n])
             {
@@ -518,13 +552,7 @@ struct PassExecutor12::Impl
             }
             if (!previous->input.ticket->Complete() && !canFollow())
             {
-                if (context)
-                {
-                    if (context->layer)
-                    {
-                        context->layer->first = true;
-                    }
-                }
+                RestartHistory();
                 status.ready = false;
                 status.reason = "Waiting for NR creation, rebuild or unknown-queue recording";
                 return S_FALSE;
@@ -583,7 +611,6 @@ struct PassExecutor12::Impl
             ++whiteEpoch;
             status.gpuExposureValid = false;
         }
-        white.Resolve(settings.white, exposure, 0);
         auto retire = [&](const std::shared_ptr<Recording>& completed)
         {
             if (settings.gpuTiming && completed->context == context)
@@ -656,8 +683,14 @@ struct PassExecutor12::Impl
         {
             status.white.value = status.white.target = 1; // SDR bypass actually normalizes by one
         }
+        // An SDR 8-bit input is copied into the HDR proxy unchanged, so the model can
+        // read the game texture directly. The raw format is checked, not the shader
+        // view: a TYPELESS or sRGB twin must not be handed to NGX as its colour input.
+        const bool encoded = exposure.sceneLinear ||
+                             (color.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+                              color.Format != DXGI_FORMAT_B8G8R8A8_UNORM);
         if (!context || context->w != color.Width || context->h != color.Height ||
-            context->format != format)
+            context->format != format || context->encoded != encoded)
         {
             D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format};
             ThrowIfFailed(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
@@ -670,6 +703,7 @@ struct PassExecutor12::Impl
             context->w = unsigned(color.Width);
             context->h = color.Height;
             context->format = format;
+            context->encoded = encoded;
             context->tuning = settings;
             white.Reset();
             ++whiteEpoch;
@@ -719,15 +753,17 @@ struct PassExecutor12::Impl
         status.gameExposureTexture = recording->exposure != nullptr;
         recording->hasExposure = status.gameExposureTexture;
         keep = recording; // registered before the first model/GPU operation
-        backend.SetUnsigned("DLSSNR.Enabled", 1u);
-        backend.SetUnsigned("DLSSNR.Width", ctx->w);
-        backend.SetUnsigned("DLSSNR.Height", ctx->h);
-        backend.SetUnsigned("CreationNodeMask", 1u);
-        backend.SetUnsigned("VisibilityNodeMask", 1u);
-        Tuning(backend, settings);
-        backend.SetResource("DLSSNR.ControlMask", nullptr);
         if (!ctx->layer)
         {
+            // Creation-time configuration: the model reads these when the feature is
+            // created, and every tuning change drops the layer before coming back here.
+            backend.SetUnsigned("DLSSNR.Enabled", 1u);
+            backend.SetUnsigned("DLSSNR.Width", ctx->w);
+            backend.SetUnsigned("DLSSNR.Height", ctx->h);
+            backend.SetUnsigned("CreationNodeMask", 1u);
+            backend.SetUnsigned("VisibilityNodeMask", 1u);
+            Tuning(backend, settings);
+            backend.SetResource("DLSSNR.ControlMask", nullptr);
             // Validate resources before letting the model record initialization.
             Shaders();
             auto layer = std::make_shared<Layer>();
@@ -754,10 +790,17 @@ struct PassExecutor12::Impl
             return S_OK; // one creation per submitted frame; evaluate nothing on it
         }
         recording->layer = ctx->layer;
-        if (!ctx->proxy)
+        if (!ctx->answer)
         {
-            ctx->proxy = Texture(device.Get(), ctx->w, ctx->h, DXGI_FORMAT_R16G16B16A16_FLOAT);
             ctx->answer = Texture(device.Get(), ctx->w, ctx->h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            if (ctx->encoded)
+            {
+                ctx->proxy = Texture(device.Get(), ctx->w, ctx->h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            }
+        }
+        // A bridge that resolves in place into its shared output never needs this texture.
+        if (!ctx->output && !frame.colorOutput)
+        {
             // The output format was validated for UAV typed stores when this context was created.
             ctx->output = Texture(device.Get(), ctx->w, ctx->h, format);
         }
@@ -818,7 +861,9 @@ struct PassExecutor12::Impl
         uav(5, nullptr);
         // Lite's captured/shared input is already the owned, unedited image.
         // Reuse it for resolve instead of Lite's second half-float keep copy.
-        srv(6, ctx->proxy.Get());
+        // Without the proxy the game texture is both the model input and the resolve source.
+        auto* const colour = ctx->encoded ? ctx->proxy.Get() : result;
+        srv(6, colour);
         srv(8, result);
         srv(9, recording->exposure.Get());
         // A bridge that supplies its shared output lets the resolve write straight into it, so the
@@ -959,11 +1004,14 @@ struct PassExecutor12::Impl
                 status.reason = "White meter unavailable; manual/history fallback";
             }
         }
-        run(0);
-        Transition(list, ctx->proxy.Get(), UAV, SRV);
+        if (ctx->encoded)
+        {
+            run(0);
+            Transition(list, ctx->proxy.Get(), UAV, SRV);
+        }
         // One feature evaluates the immutable encoded input exactly once.
         bool readable{};
-        ID3D12Resource* input = ctx->proxy.Get();
+        ID3D12Resource* input = colour;
         ID3D12Resource* final{};
         BarrierBatch entry;
         if (status.readyPasses)
@@ -973,8 +1021,6 @@ struct PassExecutor12::Impl
             // Estimator distrust is a Debug guide, not the NR application mask.
             backend.SetResource("DLSSNR.Color", input);
             backend.SetResource("DLSSNR.Output", answer);
-            backend.SetResource("DLSSNR.ControlMask", nullptr);
-            Tuning(backend, settings);
             backend.SetUnsigned("DLSSNR.Reset", layer->first ? 1u : 0u);
             backend.SetResource("DLSSNR.Depth", guides[0]);
             backend.SetResource("DLSSNR.MVec", guides[1]);
@@ -1112,42 +1158,9 @@ PassStatus PassExecutor12::Snapshot() const
     std::lock_guard lock(impl->mutex);
     return impl->status;
 }
-void PassExecutor12::Reset()
-{
-    std::lock_guard lock(impl->mutex);
-    impl->context.reset();
-    impl->previous.reset();
-    impl->inFlight.clear();
-    impl->timingPool.clear();
-    impl->white.Reset();
-    ++impl->whiteEpoch;
-    impl->status = {};
-    impl->tick = 0;
-    impl->initializationError = S_OK;
-    impl->attempted = impl->initialized = impl->domainKnown = impl->haveGuides = impl->restoreKnown = false;
-    impl->guideWidth[0] = impl->guideWidth[1] = 0;
-}
 void PassExecutor12::InvalidateHistory()
 {
     std::lock_guard lock(impl->mutex);
-    if (impl->context)
-    {
-        if (impl->context->layer)
-        {
-            impl->context->layer->first = true;
-        }
-    }
-}
-void PassExecutor12::RetireCompletedInputs()
-{
-    std::lock_guard lock(impl->mutex);
-    if (impl->previous)
-    {
-        impl->previous->RetireInputs();
-    }
-    for (auto& recording : impl->inFlight)
-    {
-        recording->RetireInputs();
-    }
+    impl->RestartHistory();
 }
 }

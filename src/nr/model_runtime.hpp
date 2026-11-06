@@ -27,8 +27,7 @@ struct ModelStatus
     State state = State::Waiting;
     HRESULT error = S_OK;
     unsigned ngxResult{}, vendor{};
-    wchar_t adapter[128]{}, corePath[1024]{}, modelPath[1024]{}, reason[192]{L"Model not initialized"};
-    wchar_t coreVersion[64]{}, modelVersion[64]{};
+    wchar_t corePath[1024]{}, modelPath[1024]{}, reason[192]{L"Model not initialized"};
 };
 // Lite ngx.cpp registry/module discovery and renderer.cpp core/model ABI.
 class ModelRuntime
@@ -54,7 +53,7 @@ class ModelRuntime
     void SetFloat(const char*, float);
     void SetUnsigned(const char*, unsigned);
     void SetResource(const char*, ID3D12Resource*);
-    static HRESULT Adapter(ID3D12Device*, unsigned& vendor, std::wstring& name);
+    static HRESULT Adapter(ID3D12Device*, unsigned& vendor);
 
   private:
     mutable std::recursive_mutex mutex;

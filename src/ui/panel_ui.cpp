@@ -108,7 +108,6 @@ void Panel::Impl::BuildResourceUi(float scale)
                     previewTexture, ImVec2(w, h),
                     ImVec2((n * tileWidth + .5f) / atlasWidth, .5f / previewHeight),
                     ImVec2(((n + 1) * tileWidth - .5f) / atlasWidth, 1 - .5f / previewHeight));
-                previewDisplayed |= ImGui::IsItemVisible();
             }
             else
             {
@@ -393,7 +392,6 @@ void Panel::Impl::BuildPipelineStatus(const nr::ModelSettings& settings, const n
 
 void Panel::Impl::BuildUi()
 {
-    previewDisplayed = false;
     bool resourcesActive = false;
     const auto display = ImGui::GetIO().DisplaySize;
     const float scale = ImGui_ImplWin32_GetDpiScaleForHwnd(hwnd);
@@ -550,14 +548,6 @@ void Panel::Impl::BuildUi()
                         ItemTip(
                             "Timing runs while the panel is open; includes encode, guides, white meter, model and resolve. Excludes feature creation, estimated MV and DX11 bridge.");
                     }
-                    if (DetailLevel() >= Detail::Verbose)
-                    {
-                        ImGui::TextWrapped(
-                            "Bridge chain: %.2f ms",
-                            double(nr::BridgeChainMilliseconds()));
-                        ItemTip(
-                            "GPU timestamp pair around the whole bridge recording: input copies, estimated MV, model and result copyback. Measured only at Level 2, and only after that submission's fence completed.");
-                    }
                     if (FAILED(model.error))
                     {
                         ImGui::Text("Runtime HRESULT 0x%08lX | NGX 0x%08X",
@@ -566,7 +556,7 @@ void Panel::Impl::BuildUi()
                     ImGui::TextDisabled("Diagnostics level: %u (0 off, 1 basic, 2 verbose)",
                                         unsigned(DetailLevel()));
                     ItemTip(
-                        "Diagnostics.Level is read at startup. Level 2 adds the bridge chain timing readout and GPU timestamp queries; no log file is written.");
+                        "Diagnostics.Level is read at startup. The log plumbing exists but no code path emits a line yet, so the level has no visible effect.");
                 }
                 const auto config = ConfigStorageSnapshot();
                 if (config.error || config.fallbackCause)

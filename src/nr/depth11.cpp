@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "depth11.hpp"
 #include "../graphics.hpp"
+#include <array>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 #include <algorithm>
 #include <atomic>
@@ -17,8 +19,14 @@ struct Candidate
     uint64_t lastSeen{};
     unsigned width{}, height{}, format{};
 };
+struct Context;
+class ContextLifetime;
 struct Context
 {
+    // One lock per context: recording threads never serialize on each other's state.
+    std::mutex mutex;
+    // Cleared when the registry entry is retired, so a thread-local cache stops using it.
+    std::atomic<bool> alive{true};
     std::shared_ptr<std::atomic<bool>> tracking = std::make_shared<std::atomic<bool>>(true);
     ID3D11Device* device{}; // identity only, never dereferenced
     // Held, not borrowed: an unheld depth view could be released and its address reused, so
@@ -28,7 +36,9 @@ struct Context
     // Held, not borrowed: a released state object's address could be reused by another state.
     ComPtr<ID3D11DepthStencilState> lastState; // parsed once per distinct state object
     bool writes = true, deferred{}, inverted{};
-    IUnknown* lifetime{}; // identity only; the native context owns the cookie
+    // Allocated while the registry lock is held, published outside it; the native
+    // context owns the only reference afterwards.
+    ContextLifetime* lifetime{};
     std::map<ID3D11Resource*, Candidate> candidates;
     Candidate* current{};   // map nodes are stable; invalidate before erase/clear
     bool currentResolved{}; // includes unsupported/null bindings
@@ -37,13 +47,22 @@ struct Context
     uint64_t lastWriteFrame{};
     unsigned frameWidth{}, frameHeight{}; // last EndFrame size, used to shape-filter bindings
     uint64_t frame{};
+    // A rejected texture is re-queried periodically, not for every draw that binds it.
+    struct Rejected
+    {
+        ID3D11Resource* resource{};
+        uint64_t frame{};
+    };
+    std::array<Rejected, 16> rejected{};
+    unsigned rejectedNext{};
+    static constexpr uint64_t RejectedRetryFrames = 4;
 };
 struct Registry
 {
-    std::recursive_mutex mutex;
-    std::map<ID3D11DeviceContext*, Context> contexts;
-    std::atomic<UINT64> policyEpoch{1};
-    ComPtr<ID3D11Texture2D> pinned, lastWinner;
+    // Shared for lookups: the per-context lock, not this one, guards the bind state.
+    std::shared_mutex mutex;
+    std::map<ID3D11DeviceContext*, std::shared_ptr<Context>> contexts;
+    ComPtr<ID3D11Texture2D> pinned, lastWinner; // mutex-guarded, never touched under a context lock
 };
 Registry& R()
 {
@@ -85,12 +104,16 @@ class ContextLifetime final : public IUnknown
         const auto n = --refs;
         if (!n)
         {
-            std::lock_guard lock(R().mutex);
-            auto it = R().contexts.find(context);
-            if (it != R().contexts.end() && it->second.lifetime == this)
             {
-                R().contexts.erase(it);
-                ++R().policyEpoch;
+                // Never called with the registry lock held: the cookie is attached
+                // and replaced outside it, so this lock is always a fresh one.
+                std::unique_lock lock(R().mutex);
+                auto it = R().contexts.find(context);
+                if (it != R().contexts.end() && it->second->lifetime == this)
+                {
+                    it->second->alive.store(false, std::memory_order_relaxed);
+                    R().contexts.erase(it);
+                }
             }
             delete this;
         }
@@ -165,16 +188,31 @@ Candidate* Find(Context& c, ID3D11Resource* resource)
     {
         return &it->second;
     }
+    auto reject = [&]
+    {
+        auto& entry = c.rejected[c.rejectedNext];
+        entry = {resource, c.frame};
+        c.rejectedNext = (c.rejectedNext + 1) % unsigned(c.rejected.size());
+        return nullptr;
+    };
+    for (const auto& entry : c.rejected)
+    {
+        // Texture addresses are recycled, so a rejection expires instead of being permanent.
+        if (entry.resource == resource && c.frame - entry.frame <= Context::RejectedRetryFrames)
+        {
+            return nullptr;
+        }
+    }
     ComPtr<ID3D11Texture2D> t;
     if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&t))))
     {
-        return nullptr;
+        return reject();
     }
     D3D11_TEXTURE2D_DESC d{};
     t->GetDesc(&d);
     if (d.SampleDesc.Count != 1 || d.MipLevels != 1 || d.ArraySize != 1 || Family(d.Format) == DXGI_FORMAT_UNKNOWN)
     {
-        return nullptr;
+        return reject();
     }
     // Bound memory: only candidates with observed work survive; evict the weakest.
     if (c.candidates.size() >= 32)
@@ -203,7 +241,6 @@ Candidate* Find(Context& c, ID3D11Resource* resource)
     candidate.format = unsigned(d.Format);
     return &candidate;
 }
-bool Shape(unsigned, unsigned, unsigned, unsigned);
 bool Shape(unsigned w, unsigned h, unsigned fw, unsigned fh)
 {
     if (!w || !h || !fw || !fh)
@@ -216,48 +253,112 @@ bool Shape(unsigned w, unsigned h, unsigned fw, unsigned fh)
     return ratio > .95 && ratio < 1.05 && w >= fw / 2 && h >= fh / 2 && w <= fw * 2 && h <= fh * 2;
 }
 }
-static Context& RegisterLocked(ID3D11DeviceContext* context)
+// Registry unique lock held; the context is not published yet, so its own lock is not needed.
+static std::shared_ptr<Context> RegisterLocked(ID3D11DeviceContext* context, bool& created)
 {
+    created = false;
     auto existing = R().contexts.find(context);
     if (existing != R().contexts.end())
     {
         return existing->second;
     }
-    auto& c = R().contexts[context];
+    auto c = std::make_shared<Context>();
     ComPtr<ID3D11Device> d;
     context->GetDevice(&d);
-    c.device = d.Get();
-    ++R().policyEpoch;
-    c.deferred = context->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED;
+    c->device = d.Get();
+    c->deferred = context->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED;
     ComPtr<ID3D11DepthStencilView> view;
     context->OMGetRenderTargets(0, nullptr, &view);
     if (view)
     {
-        view->GetResource(&c.bound);
+        view->GetResource(&c->bound);
     }
-    c.boundView = view;
-    c.current = Find(c, c.bound.Get());
-    c.currentResolved = true;
+    c->boundView = view;
+    c->current = Find(*c, c->bound.Get());
+    c->currentResolved = true;
     ComPtr<ID3D11DepthStencilState> state;
     context->OMGetDepthStencilState(&state, nullptr);
     if (state)
     {
         D3D11_DEPTH_STENCIL_DESC desc{};
         state->GetDesc(&desc);
-        c.writes = desc.DepthEnable && desc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL;
-        c.inverted = desc.DepthFunc == D3D11_COMPARISON_GREATER || desc.DepthFunc == D3D11_COMPARISON_GREATER_EQUAL;
+        c->writes = desc.DepthEnable && desc.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ALL;
+        c->inverted = desc.DepthFunc == D3D11_COMPARISON_GREATER || desc.DepthFunc == D3D11_COMPARISON_GREATER_EQUAL;
     }
-    auto* lifetime = new ContextLifetime(context);
-    c.lifetime = lifetime;
-    const auto hr = context->SetPrivateDataInterface(ContextCookieId, lifetime);
-    lifetime->Release();
-    if (FAILED(hr))
+    // Allocated under the lock so a concurrent acquire sees the entry as taken.
+    c->lifetime = new ContextLifetime(context);
+    created = true;
+    return R().contexts.emplace(context, std::move(c)).first->second;
+}
+// Registry lock NOT held. Replacing a previous cookie releases it, which re-enters
+// the registry through ContextLifetime::Release, so this can never run under the lock.
+bool AttachCookie(ID3D11DeviceContext* context, const std::shared_ptr<Context>& owner)
+{
+    auto* lifetime = owner->lifetime;
+    if (FAILED(context->SetPrivateDataInterface(ContextCookieId, lifetime)))
     {
-        R().contexts.erase(context);
-        ++R().policyEpoch;
-        throw hr;
+        owner->lifetime = nullptr;
+        // The context may have taken a reference before failing, so release ours
+        // instead of assuming this is the only one.
+        lifetime->Release();
+        std::unique_lock lock(R().mutex);
+        owner->alive.store(false, std::memory_order_relaxed);
+        auto it = R().contexts.find(context);
+        if (it != R().contexts.end() && it->second == owner)
+        {
+            R().contexts.erase(it);
+        }
+        return false;
     }
-    return c;
+    lifetime->Release(); // the native context now owns the only reference
+    return true;
+}
+// Lookup only takes the registry lock in shared mode; the returned owner keeps the
+// context alive even if another thread retires it in the meantime.
+std::shared_ptr<Context> AcquireSlow(ID3D11DeviceContext* context)
+{
+    {
+        std::shared_lock lock(R().mutex);
+        auto it = R().contexts.find(context);
+        if (it != R().contexts.end())
+        {
+            return it->second;
+        }
+    }
+    std::shared_ptr<Context> owner;
+    bool created{};
+    {
+        std::unique_lock lock(R().mutex);
+        owner = RegisterLocked(context, created);
+    }
+    if (created)
+    {
+        AttachCookie(context, owner);
+    }
+    return owner;
+}
+// Recording threads bind and clear thousands of times per frame, so the lookup result
+// is cached per thread: the hot path is two atomics instead of a shared lock and a map
+// probe. A retired context expires the weak reference.
+std::shared_ptr<Context> Acquire(ID3D11DeviceContext* context)
+{
+    struct Cache
+    {
+        ID3D11DeviceContext* key{};
+        std::weak_ptr<Context> value;
+    };
+    thread_local Cache cache;
+    if (cache.key == context)
+    {
+        if (auto owner = cache.value.lock(); owner && owner->alive.load(std::memory_order_relaxed))
+        {
+            return owner;
+        }
+    }
+    auto owner = AcquireSlow(context);
+    cache.key = context;
+    cache.value = owner;
+    return owner;
 }
 void Register(ID3D11DeviceContext* context)
 {
@@ -265,31 +366,18 @@ void Register(ID3D11DeviceContext* context)
     {
         return;
     }
-    std::lock_guard lock(R().mutex);
-    RegisterLocked(context);
-}
-// Per-thread context lookup. Map nodes are stable and every registry mutation bumps
-// policyEpoch, so a cached pointer stays valid until the epoch changes.
-Context& ContextLocked(ID3D11DeviceContext* context)
-{
-    struct Cache
+    std::shared_ptr<Context> owner;
+    bool created{};
     {
-        ID3D11DeviceContext* context{};
-        UINT64 epoch{};
-        Context* value{};
-    };
-    thread_local Cache cache;
-    const auto epoch = R().policyEpoch.load(std::memory_order_relaxed);
-    if (cache.context == context && cache.epoch == epoch && cache.value)
-    {
-        return *cache.value;
+        std::unique_lock lock(R().mutex);
+        owner = RegisterLocked(context, created);
     }
-    auto& c = RegisterLocked(context);
-    cache.context = context;
-    cache.value = &c;
-    cache.epoch = R().policyEpoch.load(std::memory_order_relaxed);
-    return c;
+    if (created)
+    {
+        AttachCookie(context, owner);
+    }
 }
+
 // The same depth target is rebound for every draw of a pass; identity comparison keeps that
 // case off the COM path entirely.
 void BindView(Context& c, ID3D11DepthStencilView* view)
@@ -329,20 +417,25 @@ void MarkWrite(Context& c)
 }
 bool TrackingEnabled(ID3D11DeviceContext* context)
 {
+    // The flag is queried for every observed call, so a thread-local owner keeps the
+    // per-draw path to two atomic reads instead of a registry lookup.
     struct Cache
     {
         ID3D11DeviceContext* context{};
-        UINT64 epoch{};
+        std::weak_ptr<Context> owner;
         std::shared_ptr<std::atomic<bool>> policy;
     };
     thread_local Cache cache;
-    const auto epoch = R().policyEpoch.load();
-    if (cache.context != context || cache.epoch != epoch || !cache.policy)
+    if (cache.context != context || cache.owner.expired())
     {
-        std::lock_guard lock(R().mutex);
-        cache.policy = RegisterLocked(context).tracking;
+        auto owner = Acquire(context);
+        if (!owner)
+        {
+            return false;
+        }
         cache.context = context;
-        cache.epoch = R().policyEpoch.load();
+        cache.policy = owner->tracking;
+        cache.owner = owner;
     }
     return cache.policy->load();
 }
@@ -352,18 +445,13 @@ void SetGameGuides(ID3D11DeviceContext* context, bool supplied)
     {
         return;
     }
-    std::lock_guard lock(R().mutex);
-    auto it = R().contexts.find(context);
-    if (it == R().contexts.end())
+    auto owner = Acquire(context);
+    if (!owner)
     {
-        if (!supplied)
-        {
-            return;
-        }
-        RegisterLocked(context);
-        it = R().contexts.find(context);
+        return;
     }
-    auto& c = it->second;
+    auto& c = *owner;
+    std::lock_guard lock(c.mutex);
     const bool enabled = !supplied;
     if (c.tracking->load() == enabled)
     {
@@ -401,8 +489,13 @@ void SetGameGuides(ID3D11DeviceContext* context, bool supplied)
 }
 void Binding(ID3D11DeviceContext* context, ID3D11DepthStencilView* view)
 {
-    std::lock_guard lock(R().mutex);
-    auto& c = ContextLocked(context);
+    auto owner = Acquire(context);
+    if (!owner)
+    {
+        return;
+    }
+    auto& c = *owner;
+    std::lock_guard lock(c.mutex);
     BindView(c, view);
     if (c.current)
     {
@@ -416,8 +509,13 @@ void Cleared(ID3D11DeviceContext* context, ID3D11DepthStencilView* view, UINT fl
     {
         return;
     }
-    std::lock_guard lock(R().mutex);
-    auto& c = ContextLocked(context);
+    auto owner = Acquire(context);
+    if (!owner)
+    {
+        return;
+    }
+    auto& c = *owner;
+    std::lock_guard lock(c.mutex);
     ComPtr<ID3D11Resource> resource;
     view->GetResource(&resource);
     if (auto* candidate = Find(c, resource.Get()))
@@ -431,8 +529,13 @@ void Cleared(ID3D11DeviceContext* context, ID3D11DepthStencilView* view, UINT fl
 }
 void State(ID3D11DeviceContext* context, ID3D11DepthStencilState* state)
 {
-    std::lock_guard lock(R().mutex);
-    auto& c = ContextLocked(context);
+    auto owner = Acquire(context);
+    if (!owner)
+    {
+        return;
+    }
+    auto& c = *owner;
+    std::lock_guard lock(c.mutex);
     // Games reuse a handful of depth-stencil states; only parse a state object once.
     if (state != c.lastState.Get())
     {
@@ -450,58 +553,74 @@ void State(ID3D11DeviceContext* context, ID3D11DepthStencilState* state)
     // Binding scan: a state change that enables depth writes marks the bound depth.
     MarkWrite(c);
 }
+// Context lock already held by the caller.
+void ClearStateLocked(Context& state)
+{
+    state.current = nullptr;
+    state.currentResolved = true;
+    state.bound.Reset();
+    state.boundView.Reset();
+    state.writes = true;
+    state.inverted = false;
+    state.lastState.Reset();
+}
 void ClearState(ID3D11DeviceContext* context)
 {
-    std::lock_guard lock(R().mutex);
-    auto it = R().contexts.find(context);
-    if (it != R().contexts.end())
-    {
-        it->second.current = nullptr;
-        it->second.currentResolved = true;
-        it->second.bound.Reset();
-        it->second.boundView.Reset();
-        it->second.writes = true;
-        it->second.inverted = false;
-        it->second.lastState.Reset();
-    }
-}
-void Finished(ID3D11DeviceContext* context, ID3D11CommandList* list, BOOL restore)
-{
-    std::lock_guard lock(R().mutex);
-    auto it = R().contexts.find(context);
-    if (it == R().contexts.end())
+    auto owner = Acquire(context);
+    if (!owner)
     {
         return;
     }
+    std::lock_guard lock(owner->mutex);
+    ClearStateLocked(*owner);
+}
+void Finished(ID3D11DeviceContext* context, ID3D11CommandList* list, BOOL restore)
+{
+    auto owner = Acquire(context);
+    if (!owner)
+    {
+        return;
+    }
+    auto& state = *owner;
+    std::lock_guard lock(state.mutex);
     auto* recording = new Recording;
-    for (auto& [key, c] : it->second.candidates)
+    for (auto& [key, c] : state.candidates)
     {
         recording->candidates.push_back(c);
     }
-    if (it->second.lastWrite)
+    if (state.lastWrite)
     {
-        recording->written = it->second.lastWrite->source;
+        recording->written = state.lastWrite->source;
     }
     if (list)
     {
         list->SetPrivateDataInterface(CookieId, recording);
     }
     recording->Release();
-    it->second.current = nullptr;
-    it->second.currentResolved = false;
+    state.current = nullptr;
+    state.currentResolved = false;
     // Both point into the map that is cleared below.
-    it->second.lastWrite = nullptr;
-    it->second.lastWriteFrame = 0;
-    it->second.candidates.clear();
+    state.lastWrite = nullptr;
+    state.lastWriteFrame = 0;
+    state.candidates.clear();
+    // A deferred context never advances the frame counter, so rejection stamps are
+    // aged out at the command list boundary instead.
+    state.rejected = {};
+    state.rejectedNext = 0;
     if (!restore)
     {
-        ClearState(context);
+        ClearStateLocked(state);
     }
 }
 void Executed(ID3D11DeviceContext* context, ID3D11CommandList* list, BOOL restore)
 {
-    std::lock_guard lock(R().mutex);
-    auto& state = RegisterLocked(context);
+    auto owner = Acquire(context);
+    if (!owner)
+    {
+        return;
+    }
+    auto& state = *owner;
+    std::lock_guard lock(state.mutex);
     Recording* recording = nullptr;
     UINT bytes = sizeof(recording);
     if (list && SUCCEEDED(list->GetPrivateData(CookieId, &bytes, &recording)) && recording)
@@ -531,19 +650,21 @@ void Executed(ID3D11DeviceContext* context, ID3D11CommandList* list, BOOL restor
     }
     if (!restore)
     {
-        ClearState(context);
+        ClearStateLocked(state);
     }
 }
 Result EndFrame(ID3D11DeviceContext* context, unsigned width, unsigned height, bool capture)
 {
-    std::lock_guard lock(R().mutex);
     Result result;
-    auto it = R().contexts.find(context);
-    if (it == R().contexts.end())
+    auto owner = Acquire(context);
+    if (!owner)
     {
         return result;
     }
-    auto& state = it->second;
+    auto& state = *owner;
+    // Registry lock first, context lock second: the order no path reverses.
+    std::lock_guard registry(R().mutex);
+    std::lock_guard lock(state.mutex);
     Candidate* best = nullptr;
     auto& reg = R();
     // A candidate accepted while the frame size was still unknown must not stay selected.
@@ -613,7 +734,7 @@ Result EndFrame(ID3D11DeviceContext* context, unsigned width, unsigned height, b
 }
 bool PinCurrent()
 {
-    std::lock_guard lock(R().mutex);
+    std::unique_lock lock(R().mutex);
     if (!R().lastWinner)
     {
         return false;
@@ -623,24 +744,23 @@ bool PinCurrent()
 }
 void ClearPin()
 {
-    std::lock_guard lock(R().mutex);
+    std::unique_lock lock(R().mutex);
     R().pinned.Reset();
 }
 bool Pinned()
 {
-    std::lock_guard lock(R().mutex);
+    std::shared_lock lock(R().mutex);
     return R().pinned != nullptr;
 }
 void Release(ID3D11Device* device)
 {
-    std::lock_guard lock(R().mutex);
-    bool erased{};
+    std::unique_lock lock(R().mutex);
     for (auto it = R().contexts.begin(); it != R().contexts.end();)
     {
-        if (it->second.device == device)
+        if (it->second->device == device)
         {
+            it->second->alive.store(false, std::memory_order_relaxed);
             it = R().contexts.erase(it);
-            erased = true;
         }
         else
         {
@@ -649,9 +769,5 @@ void Release(ID3D11Device* device)
     }
     R().pinned.Reset();
     R().lastWinner.Reset();
-    if (erased)
-    {
-        ++R().policyEpoch;
-    }
 }
 }

@@ -10,20 +10,18 @@
 
 namespace lite
 {
-// Where the INI lives: the game folder unless an override or a writable profile
-// copy wins. Selection is read-only; directory creation and seeding run on the
-// save worker.
+// Where the INI lives: the game folder unless a writable profile copy wins.
+// Selection is read-only; directory creation and seeding run on the save worker.
 struct ConfigSelection
 {
     std::wstring sourceFile, saveFile, fallbackFile;
-    bool explicitDirectory{}, userProfile{};
+    bool userProfile{};
 };
 struct ConfigSaveStatus : ConfigSelection
 {
     DWORD error{}, fallbackCause{};
 };
-ConfigSelection SelectConfig(const std::wstring& pluginFile, const std::wstring& profileFile,
-                             const std::wstring& overrideDirectory);
+ConfigSelection SelectConfig(const std::wstring& pluginFile, const std::wstring& profileFile);
 class ConfigStorage
 {
   public:

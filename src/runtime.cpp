@@ -22,7 +22,7 @@ namespace
 {
 std::mutex statusMutex;
 lite::Status status;
-std::atomic<bool> enabled{true}, usable{true}, logging{true}, skipSmallSwapchains{};
+std::atomic<bool> enabled{true}, usable{true}, logging{true};
 std::atomic<unsigned> detail{1};
 // Present, window messages and capture paths only enqueue. One detached worker
 // owns the file; the pinned module keeps this state for the process lifetime.
@@ -94,7 +94,6 @@ void Initialize(HMODULE plugin, HMODULE system)
         usable = status.enabled;
         logging = status.logging;
         detail.store(level);
-        skipSmallSwapchains = GetPrivateProfileIntW(L"Diagnostics", L"SkipSmallSwapchains", 0, ini.c_str()) != 0;
     }
     nr::ConfigureModel(ini.c_str());
     // Read at startup: it decides whether any depth/motion hook is installed at all.
@@ -142,10 +141,6 @@ bool Enabled()
 bool Usable()
 {
     return usable.load(std::memory_order_relaxed);
-}
-bool SkipSmallSwapchains()
-{
-    return skipSmallSwapchains.load(std::memory_order_relaxed);
 }
 Detail DetailLevel() noexcept
 {

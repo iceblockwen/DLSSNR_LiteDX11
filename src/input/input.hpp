@@ -19,6 +19,8 @@ bool PanelCursorMessage(UINT message);
 // Submit a legacy event's position before its button/wheel event in the backend.
 void PanelMouseMessage(HWND window, UINT message, LPARAM position);
 bool PanelRawInput(HWND window, HRAWINPUT input);
+// Cheap check, no syscalls: true when a NOLEGACY keyboard can deliver the reserved hotkey raw.
+bool PanelRawHotkeyWatched(HWND window);
 bool PanelRawHotkey(HWND window, HRAWINPUT input, UINT& message);
 void UpdatePanelPointer(HWND window);
 class PanelInputScope

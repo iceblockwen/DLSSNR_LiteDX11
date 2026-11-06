@@ -4,7 +4,6 @@
 #include "../graphics.hpp"
 #include <dxgi1_6.h>
 #include <filesystem>
-#include <vector>
 extern "C" int __cdecl LiteNrCreate(lite::nr::CreateFn, ID3D12GraphicsCommandList*, int, const void*, void**);
 extern "C" int __cdecl LiteNrEvaluate(lite::nr::EvaluateFn, ID3D12GraphicsCommandList*, const void*, const void*, void*);
 extern "C" int __cdecl LiteNrRelease(lite::nr::ReleaseFn, void*);
@@ -16,29 +15,6 @@ std::wstring ModulePath(HMODULE module)
 {
     wchar_t path[1024]{};
     return GetModuleFileNameW(module, path, 1024) ? path : L"";
-}
-std::wstring Version(const wchar_t* path)
-{
-    DWORD ignored{};
-    const auto size = GetFileVersionInfoSizeW(path, &ignored);
-    if (!size)
-    {
-        return L"Unavailable";
-    }
-    std::vector<BYTE> data(size);
-    if (!GetFileVersionInfoW(path, 0, size, data.data()))
-    {
-        return L"Unavailable";
-    }
-    VS_FIXEDFILEINFO* info{};
-    UINT bytes{};
-    if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &bytes) || bytes < sizeof(*info) || info->dwSignature != 0xfeef04bd)
-    {
-        return L"Unavailable";
-    }
-    wchar_t text[64]{};
-    swprintf_s(text, L"%u.%u.%u.%u", HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
-    return text;
 }
 std::wstring DriverDirectory()
 {
@@ -132,8 +108,6 @@ HRESULT ModelRuntime::Discover()
     std::error_code ec;
     const auto modelFile = std::filesystem::is_regular_file(file, ec) ? file.wstring() : L"";
     wcsncpy_s(status.modelPath, modelFile.c_str(), _TRUNCATE);
-    wcsncpy_s(status.coreVersion, path.empty() ? L"Not found" : Version(status.corePath).c_str(), _TRUNCATE);
-    wcsncpy_s(status.modelVersion, modelFile.empty() ? L"Not found" : Version(status.modelPath).c_str(), _TRUNCATE);
     if (path.empty() || modelFile.empty())
     {
         status.state = State::Waiting;
@@ -149,7 +123,7 @@ HRESULT ModelRuntime::Discover()
     }
     return S_OK;
 }
-HRESULT ModelRuntime::Adapter(ID3D12Device* d, unsigned& vendor, std::wstring& name)
+HRESULT ModelRuntime::Adapter(ID3D12Device* d, unsigned& vendor)
 {
     if (!d)
     {
@@ -174,7 +148,6 @@ HRESULT ModelRuntime::Adapter(ID3D12Device* d, unsigned& vendor, std::wstring& n
         return hr;
     }
     vendor = desc.VendorId;
-    name = desc.Description;
     return S_OK;
 }
 HRESULT ModelRuntime::Initialize(ID3D12Device* d)
@@ -192,13 +165,11 @@ HRESULT ModelRuntime::Initialize(ID3D12Device* d)
     {
         return status.error;
     }
-    std::wstring name;
-    auto hr = Adapter(d, status.vendor, name);
+    auto hr = Adapter(d, status.vendor);
     if (FAILED(hr))
     {
         return Fail(hr, L"Cannot identify NR adapter");
     }
-    wcsncpy_s(status.adapter, name.c_str(), _TRUNCATE);
     if (status.vendor != 0x10de)
     {
         return Fail(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED), L"This adapter is not NVIDIA; real NGX/NR validation is unavailable");

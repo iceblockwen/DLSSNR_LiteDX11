@@ -41,9 +41,6 @@ Status Snapshot();
 // Lock-free hot-path queries; Snapshot copies the full status block.
 bool Enabled();
 bool Usable();
-// Diagnostics.SkipSmallSwapchains: leave chains whose actual width or height is
-// below 100 unwrapped. Read from the creation request, never from the chain.
-bool SkipSmallSwapchains();
 Detail DetailLevel() noexcept;
 // The log queue and its worker are kept although no call site exists: adding a
 // diagnostic means calling Log without rebuilding the plumbing.

@@ -102,9 +102,16 @@ class BarrierBatch
         list->ResourceBarrier(count, barriers);
         count = 0;
     }
+    // Drop collected transitions that will never reach a command list. Only valid
+    // together with a full reset of the tracked states.
+    void Discard()
+    {
+        count = 0;
+    }
 
   private:
-    static constexpr UINT capacity = 8;
+    // A dense-flow stage transitions at most seven inputs and two outputs.
+    static constexpr UINT capacity = 16;
     D3D12_RESOURCE_BARRIER barriers[capacity]{};
     UINT count{};
 };
@@ -113,18 +120,16 @@ class Preview12
 {
   public:
     explicit Preview12(ID3D12Device*);
-    // All three inputs side by side: three tiles copied into one image.
+    // All three inputs side by side in one atlas: each tile writes its own subrect.
     HRESULT Record(ID3D12GraphicsCommandList*, const Frame12&);
     ComPtr<ID3D12Resource> image;
 
   private:
-    HRESULT RecordTile(ID3D12GraphicsCommandList*, ID3D12Resource* source, const Guides&, bool generatedMotion,
-                       float frameTimeMs, unsigned input, unsigned outputWidth, unsigned outputHeight);
+    HRESULT Tile(ID3D12GraphicsCommandList*, const Frame12&, unsigned input, unsigned width, unsigned height);
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
     ComPtr<ID3D12DescriptorHeap> heap;
-    std::array<std::unique_ptr<Preview12>, 3> tiles;
 };
 // Lite's same-adapter shared twins + two command allocator slots + GPU fence handoff.
 // Caller serializes the immediate context; no CPU wait is used by Process.
@@ -144,9 +149,6 @@ class Bridge11
     void QueuePreview(ID3D12Resource*, D3D12_RESOURCE_STATES);
     ComPtr<ID3D11ShaderResourceView> PreviewImage() const;
     ID3D12Device* Device() const;
-    const wchar_t* LastOperation() const;
-    // Verbose only: GPU milliseconds of the last completed recording, 0 when not measured.
-    float ChainMilliseconds() const;
 
   private:
     struct Impl;

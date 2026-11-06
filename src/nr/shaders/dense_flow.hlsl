@@ -309,10 +309,12 @@ float4 calc_flow_dynamic(VSOUT i,
 
 
 
-void downsample_features(Texture2D<float4> s0, Texture2D<float4> s1, float2 uv, out float4 f0, out float f1)
+// Only the current frame is downsampled: last frame's pyramid becomes this
+// frame's previous pyramid by swapping the two texture sets.
+void downsample_features(Texture2D<float4> s0, float2 uv, out float4 f0)
 {
 	float2 tx = rcp(flow_size(s0));
-	f0 = f1 = 0;
+	f0 = 0;
 	f0 += s0.SampleLevel(LinearMirror, uv + float2(-1.90313, -1.90313) * tx, 0) * 0.083411; 
 	f0 += s0.SampleLevel(LinearMirror, uv + float2(       0, -1.90313) * tx, 0) * 0.121987; 
 	f0 += s0.SampleLevel(LinearMirror, uv + float2( 1.90313, -1.90313) * tx, 0) * 0.083411; 
@@ -322,15 +324,6 @@ void downsample_features(Texture2D<float4> s0, Texture2D<float4> s1, float2 uv, 
 	f0 += s0.SampleLevel(LinearMirror, uv + float2(-1.90313,  1.90313) * tx, 0) * 0.083411; 
 	f0 += s0.SampleLevel(LinearMirror, uv + float2(       0,  1.90313) * tx, 0) * 0.121987; 
 	f0 += s0.SampleLevel(LinearMirror, uv + float2( 1.90313,  1.90313) * tx, 0) * 0.083411;
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(-1.90313, -1.90313) * tx, 0).x * 0.083411; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(       0, -1.90313) * tx, 0).x * 0.121987; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2( 1.90313, -1.90313) * tx, 0).x * 0.083411; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(-1.90313,        0) * tx, 0).x * 0.121987; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(       0,        0) * tx, 0).x * 0.178404; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2( 1.90313,        0) * tx, 0).x * 0.121987; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(-1.90313,  1.90313) * tx, 0).x * 0.083411; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2(       0,  1.90313) * tx, 0).x * 0.121987; 
-	f1 += s1.SampleLevel(LinearMirror, uv + float2( 1.90313,  1.90313) * tx, 0).x * 0.083411;
 }
 
 
@@ -356,8 +349,8 @@ float PSDepthMip(float4 pos:SV_Position):SV_Target0 {
     // Each R16 target rounds before the next level samples it.
     return T0.SampleLevel(LinearClamp,pos.xy/TargetSize,0).x;
 }
-void PSDown(float4 pos:SV_Position,out float feature:SV_Target0,out float previous:SV_Target1) {
-    float4 f0;downsample_features(T0,T1,pos.xy/TargetSize,f0,previous);feature=f0.x;
+float PSDown(float4 pos:SV_Position):SV_Target0 {
+    float4 f0;downsample_features(T0,pos.xy/TargetSize,f0);return f0.x;
 }
 float4 PSMatch(float4 pos:SV_Position):SV_Target0 {return calc_flow_dynamic(position(uint2(pos.xy)),T0,T1,T2,Level);}
 float4 PSPool(float4 pos:SV_Position):SV_Target0 {return filter_flow(position(uint2(pos.xy)),T2,3,Radius,Dilation);}

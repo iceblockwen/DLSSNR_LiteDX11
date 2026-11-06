@@ -11,8 +11,7 @@ using Microsoft::WRL::ComPtr;
 namespace lite::capture
 {
 inline constexpr GUID SwapchainIID = {0xd2179f03, 0xd92b, 0x4785, {0xb1, 0x13, 0x2c, 0x91, 0x81, 0x05, 0x80, 0x11}};
-void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT requestedWidth, UINT requestedHeight) noexcept;
-void ResolveSwapchainRequest(HWND, UINT& width, UINT& height) noexcept;
+void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output) noexcept;
 void CaptureAdapter(IDXGIAdapter*) noexcept;
 // Native DXGI/D3D creation must keep its own internal factory objects.
 struct NativeFactoryScope
@@ -23,9 +22,9 @@ struct NativeFactoryScope
     NativeFactoryScope& operator=(const NativeFactoryScope&) = delete;
 };
 template <class T>
-void WrapSwapchain(IUnknown* device, T** output, UINT requestedWidth, UINT requestedHeight) noexcept
+void WrapSwapchain(IUnknown* device, T** output) noexcept
 {
-    WrapSwapchainObject(device, reinterpret_cast<IDXGISwapChain**>(output), requestedWidth, requestedHeight);
+        WrapSwapchainObject(device, reinterpret_cast<IDXGISwapChain**>(output));
 }
 class Swapchain final : public IDXGISwapChain4
 {

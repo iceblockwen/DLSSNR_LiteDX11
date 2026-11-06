@@ -9,12 +9,8 @@
 #include <imgui_impl_win32.h>
 
 #include <map>
-#include <algorithm>
 #include <mutex>
 #include <memory>
-#include <stdexcept>
-#include <cstdio>
-#include <cstring>
 #include <string>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -136,6 +132,13 @@ LRESULT CALLBACK Panel::Impl::WindowProc(HWND window, UINT message, WPARAM wpara
     {
         return 0;
     }
+    // A hidden panel only needs the reserved hotkey from WM_INPUT; the packet itself
+    // still reaches the game through the original window procedure below.
+    UINT rawHotkey{};
+    if (message == WM_INPUT && !nr::PanelVisible() && PanelRawHotkeyWatched(window))
+    {
+        PanelRawHotkey(window, reinterpret_cast<HRAWINPUT>(lparam), rawHotkey);
+    }
     std::unique_lock lock(Global().mutex);
     auto* route = Windows().Find(window);
     if (!route)
@@ -162,8 +165,8 @@ LRESULT CALLBACK Panel::Impl::WindowProc(HWND window, UINT message, WPARAM wpara
     }
     if (message == WM_INPUT)
     {
-        UINT hotkey{};
-        if (PanelRawHotkey(window, reinterpret_cast<HRAWINPUT>(lparam), hotkey))
+        UINT hotkey = rawHotkey;
+        if (hotkey || PanelRawHotkey(window, reinterpret_cast<HRAWINPUT>(lparam), hotkey))
         {
             WindowProc(window, hotkey, VK_INSERT, 0);
             return DefWindowProcW(window, message, wparam, lparam);
@@ -384,10 +387,10 @@ void Panel::Close()
     impl->Unsubclass();
     impl.reset();
 }
-void Panel::Draw(UINT flags) noexcept
+void Panel::ProcessFrame() noexcept
 {
     auto& p = *impl;
-    if (!p.hwnd || (flags & DXGI_PRESENT_TEST))
+    if (!p.hwnd)
     {
         return;
     }
@@ -399,7 +402,11 @@ void Panel::Draw(UINT flags) noexcept
     catch (...)
     {
     }
-    if (!p.status.visible || p.status.panel == State::Failed)
+}
+void Panel::DrawUi() noexcept
+{
+    auto& p = *impl;
+    if (!p.hwnd || !p.status.visible || p.status.panel == State::Failed)
     {
         return;
     }
@@ -487,14 +494,27 @@ void TrackSwapchain(IDXGISwapChain* swap, IUnknown* device) noexcept
 }
 void DrawSwapchain(IDXGISwapChain* swap, UINT flags) noexcept
 {
+    if (flags & DXGI_PRESENT_TEST)
+    {
+        return;
+    }
     try
     {
-        std::lock_guard lock(Global().mutex);
-        const auto it = Global().panels.find(swap);
-        if (it != Global().panels.end())
+        // The panel is kept alive by the reference; the NR chain then runs without the
+        // registry lock, so window messages never wait for a frame's worth of GPU work.
+        std::shared_ptr<Panel> panel;
         {
-            it->second->Draw(flags);
+            std::lock_guard lock(Global().mutex);
+            const auto it = Global().panels.find(swap);
+            if (it == Global().panels.end())
+            {
+                return;
+            }
+            panel = it->second;
         }
+        panel->ProcessFrame();
+        std::lock_guard lock(Global().mutex);
+        panel->DrawUi();
     }
     catch (...)
     {

@@ -6,8 +6,8 @@
 #include "nr_shaders.hpp"
 #include <algorithm>
 #include <array>
-#include <map>
 #include <cmath>
+#include <cstring>
 namespace lite::nr
 {
 namespace
@@ -23,6 +23,8 @@ enum Stage
     Finish,
     StageCount
 };
+// Prepare 1, DepthMip 3, Down 7, Match 8, Pool 7, Upscale 2, Finish 1.
+constexpr unsigned DrawCount = 29;
 struct Pipelines
 {
     ComPtr<ID3D12RootSignature> root;
@@ -69,10 +71,11 @@ struct Pipelines
                 p.DepthStencilState.FrontFace.StencilFunc = p.DepthStencilState.BackFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
                 p.DepthStencilState.FrontFace.StencilFailOp = p.DepthStencilState.FrontFace.StencilDepthFailOp = p.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
                 p.DepthStencilState.BackFace = p.DepthStencilState.FrontFace;
-                p.NumRenderTargets = n == Prepare || n == Down ? 2 : 1;
+                // Only Prepare writes two targets; Down's previous pyramid comes from the swap.
+                p.NumRenderTargets = n == Prepare ? 2 : 1;
                 p.RTVFormats[0] = n == Finish ? DXGI_FORMAT_R16G16_FLOAT : n < Match ? DXGI_FORMAT_R16_FLOAT
                                                                                      : DXGI_FORMAT_R16G16B16A16_FLOAT;
-                p.RTVFormats[1] = n == Prepare || n == Down ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_UNKNOWN;
+                p.RTVFormats[1] = n == Prepare ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_UNKNOWN;
                 for (unsigned rt = 0; rt < p.NumRenderTargets; ++rt)
                 {
                     auto& blend = p.BlendState.RenderTarget[rt];
@@ -112,20 +115,98 @@ struct Generation
     std::array<ComPtr<ID3D12Resource>, 8> current, previous, a, b;
     std::array<ComPtr<ID3D12Resource>, 4> depth;
     ComPtr<ID3D12Resource> prevDepth, quarter, half, uvMotion, noise, noiseUpload;
-    std::map<ID3D12Resource*, D3D12_RESOURCE_STATES> states;
+    // One slot per owned texture: the set is fixed for a generation, so a state
+    // lookup is a short pointer scan instead of a per-frame map insertion.
+    std::array<D3D12_RESOURCE_STATES, 8> currentState{}, previousState{}, aState{}, bState{};
+    std::array<D3D12_RESOURCE_STATES, 4> depthState{};
+    D3D12_RESOURCE_STATES prevDepthState{}, quarterState{}, halfState{}, uvMotionState{}, noiseState{};
+    D3D12_RESOURCE_STATES* State(ID3D12Resource* resource)
+    {
+        auto pool = [&](auto& resources, auto& states) -> D3D12_RESOURCE_STATES*
+        {
+            for (size_t n = 0; n < states.size(); ++n)
+            {
+                if (resources[n].Get() == resource)
+                {
+                    return &states[n];
+                }
+            }
+            return nullptr;
+        };
+        auto one = [&](ComPtr<ID3D12Resource>& texture, D3D12_RESOURCE_STATES& state) -> D3D12_RESOURCE_STATES*
+        {
+            return texture.Get() == resource ? &state : nullptr;
+        };
+        if (auto* s = pool(current, currentState))
+        {
+            return s;
+        }
+        if (auto* s = pool(previous, previousState))
+        {
+            return s;
+        }
+        if (auto* s = pool(a, aState))
+        {
+            return s;
+        }
+        if (auto* s = pool(b, bState))
+        {
+            return s;
+        }
+        if (auto* s = pool(depth, depthState))
+        {
+            return s;
+        }
+        if (auto* s = one(prevDepth, prevDepthState))
+        {
+            return s;
+        }
+        if (auto* s = one(quarter, quarterState))
+        {
+            return s;
+        }
+        if (auto* s = one(half, halfState))
+        {
+            return s;
+        }
+        if (auto* s = one(uvMotion, uvMotionState))
+        {
+            return s;
+        }
+        return one(noise, noiseState);
+    }
 };
+// Descriptors describe a fixed resource set, so they are written once per slot
+// and reused until the bridge hands over a different texture. Slots are per
+// draw, not per stage: root signatures read them when the list executes.
 struct Recording
 {
     std::shared_ptr<Generation> generation;
     std::shared_ptr<Pipelines> pipelines;
     ComPtr<ID3D12DescriptorHeap> heap, rtv;
-    unsigned offset{};
+    std::array<std::array<ID3D12Resource*, 7>, DrawCount> srvSource{};
+    std::array<std::array<DXGI_FORMAT, 7>, DrawCount> srvFormat{};
+    std::array<std::array<ID3D12Resource*, 2>, StageCount> rtvSource{};
+    BarrierBatch barriers;
+    unsigned draws{};
+    bool stateSet{};
 };
-void Move(ID3D12GraphicsCommandList* list, Generation& g, ID3D12Resource* resource, D3D12_RESOURCE_STATES to)
+void Move(ID3D12GraphicsCommandList* list, Generation& g, Recording& record, ID3D12Resource* resource, D3D12_RESOURCE_STATES to)
 {
-    auto& state = g.states[resource];
-    Transition(list, resource, state, to);
-    state = to;
+    auto* state = g.State(resource);
+    if (!state)
+    {
+        // Bridge-owned input: its state belongs to the caller, which has already made it readable.
+        Transition(list, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, to);
+        return;
+    }
+    if (*state == to)
+    {
+        return;
+    }
+    // Collected into one barrier array per draw; a stage never exceeds the batch size.
+    record.barriers.Add(resource, *state, to);
+    *state = to;
 }
 struct Constants
 {
@@ -211,63 +292,82 @@ struct DenseFlow12::Impl
         g->noiseUpload->Unmap(0, nullptr);
         generation = std::move(g);
     }
-    void Copy(ID3D12GraphicsCommandList* list, ID3D12Resource* from, ID3D12Resource* to)
-    {
-        auto& g = *generation;
-        Move(list, g, from, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        Move(list, g, to, D3D12_RESOURCE_STATE_COPY_DEST);
-        list->CopyResource(to, from);
-        Move(list, g, from, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Move(list, g, to, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    }
     void Dispatch(ID3D12GraphicsCommandList* list, Recording& record, Stage stage, unsigned w, unsigned h, unsigned level, int radius, int dilation,
                   std::array<ID3D12Resource*, 7> inputs, std::initializer_list<ID3D12Resource*> outputs)
     {
         auto& g = *generation;
-        const auto stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        auto cpu = record.heap->GetCPUDescriptorHandleForHeapStart();
-        cpu.ptr += uint64_t(record.offset) * stride;
-        auto gpu = record.heap->GetGPUDescriptorHandleForHeapStart();
-        gpu.ptr += uint64_t(record.offset) * stride;
-        if (record.offset + inputs.size() > 512)
-        {
-            throw E_UNEXPECTED;
-        }
+        // Unused taps read the noise texture, so one resolution drives both loops.
+        std::array<ID3D12Resource*, 7> resolved{};
         for (unsigned n = 0; n < inputs.size(); ++n)
         {
-            auto* r = inputs[n] ? inputs[n] : g.noise.Get();
+            resolved[n] = inputs[n] ? inputs[n] : g.noise.Get();
             // External bridge inputs are already SRV-readable; internal maps track their own states.
             if (stage != Prepare || n >= 2)
             {
-                Move(list, g, r, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                Move(list, g, record, resolved[n], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             }
-            D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-            view.Format = ViewFormat(r->GetDesc().Format, stage == Prepare && n == 1);
-            view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            view.Texture2D.MipLevels = 1;
-            device->CreateShaderResourceView(r, &view, cpu);
+        }
+        for (auto* r : outputs)
+        {
+            Move(list, g, record, r, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+        // Every transition this draw needs reaches the list as one barrier array.
+        record.barriers.Flush(list);
+        if (record.draws >= DrawCount)
+        {
+            throw E_UNEXPECTED;
+        }
+        const unsigned draw = record.draws++;
+        const auto stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        auto cpu = record.heap->GetCPUDescriptorHandleForHeapStart();
+        cpu.ptr += uint64_t(draw) * 7 * stride;
+        auto gpu = record.heap->GetGPUDescriptorHandleForHeapStart();
+        gpu.ptr += uint64_t(draw) * 7 * stride;
+        for (unsigned n = 0; n < inputs.size(); ++n)
+        {
+            auto* r = resolved[n];
+            const auto view = ViewFormat(r->GetDesc().Format, stage == Prepare && n == 1);
+            // Bridge textures outlive no descriptor: their slots are always rewritten,
+            // because a destroyed resource's address can be reused by another texture.
+            const bool external = stage == Prepare && n < 2;
+            if (external || record.srvSource[draw][n] != r || record.srvFormat[draw][n] != view)
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+                desc.Format = view;
+                desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                desc.Texture2D.MipLevels = 1;
+                device->CreateShaderResourceView(r, &desc, cpu);
+                record.srvSource[draw][n] = r;
+                record.srvFormat[draw][n] = view;
+            }
             cpu.ptr += stride;
         }
         unsigned count = 0;
         std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> targets{};
         auto rt = record.rtv->GetCPUDescriptorHandleForHeapStart();
         const auto rtStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        rt.ptr += uint64_t(record.offset) * rtStride;
+        rt.ptr += uint64_t(stage) * 2 * rtStride;
         for (auto* r : outputs)
         {
-            Move(list, g, r, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            device->CreateRenderTargetView(r, nullptr, rt);
+            if (record.rtvSource[stage][count] != r)
+            {
+                device->CreateRenderTargetView(r, nullptr, rt);
+                record.rtvSource[stage][count] = r;
+            }
             targets[count] = rt;
             rt.ptr += rtStride;
             ++count;
         }
-        record.offset += unsigned(inputs.size());
         Constants constants{{w, h}, {g.w, g.h}, level, radius, dilation, unsigned(g.reversed), unsigned(g.flip), unsigned(!g.frames), unsigned(g.settings.logarithmic), g.settings.farPlane, g.settings.fov, g.settings.depthMultiplier, 0, {g.guides.originX[0], g.guides.originY[0]}, {g.guides.originX[1], g.guides.originY[1]}, {g.guides.width[1], g.guides.height[1]}, {0, 0}, {g.settings.depthScaleX, g.settings.depthScaleY}, {g.settings.depthOffsetX, g.settings.depthOffsetY}, {g.settings.depthPixelOffsetX, g.settings.depthPixelOffsetY}, {0, 0}, 0};
-        auto* heap = record.heap.Get();
-        list->SetDescriptorHeaps(1, &heap);
+        if (!record.stateSet)
+        {
+            auto* heap = record.heap.Get();
+            list->SetDescriptorHeaps(1, &heap);
+            list->SetGraphicsRootSignature(pipelines->root.Get());
+            record.stateSet = true;
+        }
         list->SetPipelineState(pipelines->pso[stage].Get());
-        list->SetGraphicsRootSignature(pipelines->root.Get());
         list->SetGraphicsRoot32BitConstants(0, 32, &constants, 0);
         list->SetGraphicsRootDescriptorTable(1, gpu);
         D3D12_VIEWPORT viewport{0, 0, float(w), float(h), 0, 1};
@@ -277,11 +377,6 @@ struct DenseFlow12::Impl
         list->OMSetRenderTargets(count, targets.data(), FALSE, nullptr);
         list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list->DrawInstanced(3, 1, 0, 0);
-        list->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
-        for (auto* r : outputs)
-        {
-            Move(list, g, r, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
     }
 };
 DenseFlow12::DenseFlow12(ID3D12Device* device) : impl(std::make_unique<Impl>(device))
@@ -291,13 +386,6 @@ DenseFlow12::~DenseFlow12() = default;
 void DenseFlow12::Reset()
 {
     impl->generation.reset();
-}
-void DenseFlow12::InvalidateHistory()
-{
-    if (impl->generation)
-    {
-        impl->generation->frames = 0;
-    }
 }
 ComPtr<ID3D12Resource> DenseFlow12::MotionUV() const
 {
@@ -349,28 +437,50 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
         }
         impl->Ensure(w, h, guides, settings);
         auto& g = *impl->generation;
+        // This frame's previous pyramid is exactly last frame's current pyramid, so the
+        // two sets trade places instead of being recomputed and copied.
+        std::swap(g.current, g.previous);
+        std::swap(g.currentState, g.previousState);
+        std::swap(g.depth[3], g.prevDepth);
+        std::swap(g.depthState[3], g.prevDepthState);
         auto record = std::static_pointer_cast<Recording>(owned);
         if (!record)
         {
             record = std::make_shared<Recording>();
         }
-        record->generation = impl->generation;
         record->pipelines = impl->pipelines;
-        record->offset = 0;
+        // Descriptor heap and root signature are command list state: set once per
+        // recording, never twice for the thirty draws inside it.
+        record->stateSet = false;
+        record->draws = 0;
+        // A new generation reallocates every texture; descriptors cached for the
+        // previous set must not be compared against the recycled addresses.
+        if (record->generation.get() != impl->generation.get())
+        {
+            record->srvSource = {};
+            record->srvFormat = {};
+            record->rtvSource = {};
+            // A failed recording abandons its generation midway; the collected
+            // transitions were never executed and must not outlive it.
+            record->barriers.Discard();
+        }
+        record->generation = impl->generation;
         if (!record->heap)
         {
-            D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 512, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+            D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, DrawCount * 7, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
             ThrowIfFailed(impl->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&record->heap)));
         }
         owned = record;
         if (!record->rtv)
         {
-            D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 512, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+            // One pair per stage plus the first-frame clear slot.
+            D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, StageCount * 2 + 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
             ThrowIfFailed(impl->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&record->rtv)));
         }
         if (!g.noiseUploaded)
         {
-            Move(list, g, g.noise.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
+            Move(list, g, *record, g.noise.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
+            record->barriers.Flush(list);
             D3D12_TEXTURE_COPY_LOCATION to{};
             to.pResource = g.noise.Get();
             to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -379,7 +489,7 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
             from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             from.PlacedFootprint.Footprint = {DXGI_FORMAT_R8_UNORM, 256, 256, 1, 256};
             list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
-            Move(list, g, g.noise.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Move(list, g, *record, g.noise.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             g.noiseUploaded = true;
         }
         auto dispatch = [&](Stage stage, unsigned shift, unsigned level, int radius, int dilation, std::array<ID3D12Resource*, 7> inputs, std::initializer_list<ID3D12Resource*> outputs)
@@ -404,18 +514,24 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
             const float zero[4]{};
             auto clear = [&](ID3D12Resource* r)
             {
-                Move(list, g, r, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                Move(list, g, *record, r, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                record->barriers.Flush(list);
+                // Its own slot: the cached per-stage views must survive this clear.
                 auto handle = record->rtv->GetCPUDescriptorHandleForHeapStart();
+                handle.ptr += uint64_t(StageCount * 2) * impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                 impl->device->CreateRenderTargetView(r, nullptr, handle);
                 list->ClearRenderTargetView(handle, zero, 0, nullptr);
-                Move(list, g, r, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             };
-            clear(g.previous[0].Get());
+            // Every level: a restarted history must not read a pyramid from the frame before.
+            for (auto& level : g.previous)
+            {
+                clear(level.Get());
+            }
             clear(g.prevDepth.Get());
         }
         for (unsigned n = 1; n < 8; ++n)
         {
-            dispatch(Down, n, n, 0, 0, {g.current[n - 1].Get(), g.previous[n - 1].Get()}, {g.current[n].Get(), g.previous[n].Get()});
+            dispatch(Down, n, n, 0, 0, {g.current[n - 1].Get()}, {g.current[n].Get()});
         }
         for (int n = 7; n >= 0; --n)
         {
@@ -430,8 +546,9 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
         dispatch(Upscale, 2, 2, 3, 2, {nullptr, nullptr, g.a[0].Get(), g.depth[2].Get()}, {g.quarter.Get()});
         dispatch(Upscale, 1, 1, 2, 2, {nullptr, nullptr, g.quarter.Get(), g.depth[1].Get()}, {g.half.Get()});
         dispatch(Finish, 0, 0, 1, 2, {nullptr, nullptr, g.half.Get(), g.depth[0].Get()}, {g.uvMotion.Get()});
-        impl->Copy(list, g.current[0].Get(), g.previous[0].Get());
-        impl->Copy(list, g.depth[3].Get(), g.prevDepth.Get());
+        // uvMotion is the only texture the caller reads; it leaves this recording readable.
+        Move(list, g, *record, g.uvMotion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        record->barriers.Flush(list);
         ++g.frames;
         return S_OK;
     }
@@ -445,13 +562,5 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
         Reset();
         return E_FAIL;
     }
-}
-HRESULT DenseFlow12::RecordForNR(ID3D12GraphicsCommandList* list, const Frame12& frame, std::shared_ptr<void>& owned, const DenseFlowSettings& settings)
-{
-    // The final upscale already writes uvMotion at frame resolution, which is the same
-    // contract Launchpad hands to its consumer: UV-space motion plus a scale. Converting
-    // it to pixels in a second full-screen pass cost one pass plus 41 MB of writes per
-    // frame and lost precision in R16F for large displacements.
-    return Record(list, frame, owned, settings);
 }
 }

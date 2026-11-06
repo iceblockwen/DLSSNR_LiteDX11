@@ -25,8 +25,6 @@ struct DepthStatus
     unsigned candidates{};
     bool inverted{}, deferred{}, written{};
 };
-// Verbose only: GPU milliseconds of the last completed bridge recording, 0 when not measured.
-float BridgeChainMilliseconds();
 DepthStatus DepthSnapshot();
 struct PreviewStatus
 {
@@ -34,7 +32,6 @@ struct PreviewStatus
     HRESULT error = S_OK;
     ResourceInfo resources[3]{};
     Guides guides;
-    HRESULT previewError = S_OK;
     wchar_t reason[192]{L"Waiting for frame resources"};
 };
 bool PreviewSelected();
@@ -48,7 +45,6 @@ void SetDisplayScale(float, bool persist = true);
 PreviewStatus PreviewSnapshot();
 // `described` carries the caller's already-read extents; null means query them on demand.
 HRESULT Capture11(ID3D11DeviceContext*, const Input11&, const ResourceInfo* described);
-void PreviewResult(HRESULT);
 void RetireCompleted();
 void ReleaseNativeCapture(ID3D11Device*);
 void ReleaseGameStream11(UINT64);

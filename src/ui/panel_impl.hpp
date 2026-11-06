@@ -13,7 +13,6 @@
 #include <imgui.h>
 #include <wrl/client.h>
 #include <array>
-#include <vector>
 
 namespace lite
 {
@@ -75,7 +74,6 @@ struct Panel::Impl
     ImTextureID previewTexture{};
     bool previewSelected{};
     UINT previewWidth{}, previewHeight{};
-    bool previewDisplayed{};
     // Committed on edit end, never per frame of a drag.
     void CommitFlowOptions();
     bool CommitTuning(nr::ModelSettings* target = nullptr);

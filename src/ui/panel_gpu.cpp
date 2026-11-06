@@ -106,10 +106,6 @@ void Panel::Impl::Draw11()
     auto* view = panelRtv.Get();
     immediate->OMSetRenderTargets(1, &view, nullptr);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    if (previewDisplayed)
-    {
-        nr::PreviewResult(S_OK);
-    }
     immediate->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, targets, depth);
     // ImGui 1.90.9 clears these stages but does not restore them itself.
     immediate->HSSetShader(hull.Get(), hullClasses.data(), hullCount);

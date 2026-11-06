@@ -31,13 +31,11 @@ struct Create
     template <class Fn>
     static HRESULT Call(Fn fn, IDXGIFactory* self, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** out)
     {
-        UINT width = desc ? desc->BufferDesc.Width : 0, height = desc ? desc->BufferDesc.Height : 0;
-        lite::capture::ResolveSwapchainRequest(desc ? desc->OutputWindow : nullptr, width, height);
         lite::capture::NativeFactoryScope internal;
         const auto hr = fn(self, device, desc, out);
         if (SUCCEEDED(hr))
         {
-            lite::capture::WrapSwapchain(device, out, width, height);
+            lite::capture::WrapSwapchain(device, out);
         }
         return hr;
     }
@@ -47,13 +45,11 @@ struct CreateHwnd
     template <class Fn>
     static HRESULT Call(Fn fn, IDXGIFactory2* self, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC1* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen, IDXGIOutput* output, IDXGISwapChain1** out)
     {
-        UINT width = desc ? desc->Width : 0, height = desc ? desc->Height : 0;
-        lite::capture::ResolveSwapchainRequest(hwnd, width, height);
         lite::capture::NativeFactoryScope internal;
         const auto hr = fn(self, device, hwnd, desc, fullscreen, output, out);
         if (SUCCEEDED(hr))
         {
-            lite::capture::WrapSwapchain(device, out, width, height);
+            lite::capture::WrapSwapchain(device, out);
         }
         return hr;
     }
@@ -63,12 +59,11 @@ struct CreateCore
     template <class Fn>
     static HRESULT Call(Fn fn, IDXGIFactory2* self, IUnknown* device, IUnknown* window, const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput* output, IDXGISwapChain1** out)
     {
-        UINT width = desc ? desc->Width : 0, height = desc ? desc->Height : 0;
         lite::capture::NativeFactoryScope internal;
         const auto hr = fn(self, device, window, desc, output, out);
         if (SUCCEEDED(hr))
         {
-            lite::capture::WrapSwapchain(device, out, width, height);
+            lite::capture::WrapSwapchain(device, out);
         }
         return hr;
     }
@@ -78,12 +73,11 @@ struct CreateComposition
     template <class Fn>
     static HRESULT Call(Fn fn, IDXGIFactory2* self, IUnknown* device, const DXGI_SWAP_CHAIN_DESC1* desc, IDXGIOutput* output, IDXGISwapChain1** out)
     {
-        UINT width = desc ? desc->Width : 0, height = desc ? desc->Height : 0;
         lite::capture::NativeFactoryScope internal;
         const auto hr = fn(self, device, desc, output, out);
         if (SUCCEEDED(hr))
         {
-            lite::capture::WrapSwapchain(device, out, width, height);
+            lite::capture::WrapSwapchain(device, out);
         }
         return hr;
     }
@@ -93,13 +87,11 @@ struct Create11
     template <class Fn>
     static HRESULT Call(Fn fn, IDXGIAdapter* adapter, D3D_DRIVER_TYPE type, HMODULE software, UINT flags, const D3D_FEATURE_LEVEL* levels, UINT count, UINT sdk, const DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** swap, ID3D11Device** device, D3D_FEATURE_LEVEL* level, ID3D11DeviceContext** context)
     {
-        UINT width = desc ? desc->BufferDesc.Width : 0, height = desc ? desc->BufferDesc.Height : 0;
-        lite::capture::ResolveSwapchainRequest(desc ? desc->OutputWindow : nullptr, width, height);
         lite::capture::NativeFactoryScope internal;
         const auto hr = fn(adapter, type, software, flags, levels, count, sdk, desc, swap, device, level, context);
         if (SUCCEEDED(hr))
         {
-            lite::capture::WrapSwapchain(device ? *device : nullptr, swap, width, height);
+            lite::capture::WrapSwapchain(device ? *device : nullptr, swap);
         }
         return hr;
     }
@@ -348,28 +340,7 @@ void CaptureAdapter(IDXGIAdapter* adapter) noexcept
     {
     }
 }
-void ResolveSwapchainRequest(HWND window, UINT& width, UINT& height) noexcept
-{
-    if (!lite::SkipSmallSwapchains())
-    {
-        return;
-    }
-    RECT client{};
-    if (window && (!width || !height) && GetClientRect(window, &client))
-    {
-        if (!width && client.right > client.left)
-        {
-            width = UINT(client.right - client.left);
-        }
-        if (!height && client.bottom > client.top)
-        {
-            height = UINT(client.bottom - client.top);
-        }
-    }
-    // Resolve automatic HWND dimensions before creation; never inspect the
-    // returned small-chain COM object. Native creation arguments stay unchanged.
-}
-void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT requestedWidth, UINT requestedHeight) noexcept
+void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output) noexcept
 {
     if (!Usable())
     {
@@ -377,12 +348,6 @@ void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT request
     }
     if (!output || !*output || captureDepth >= 4)
     {
-        return;
-    }
-    if (lite::SkipSmallSwapchains() && ((requestedWidth && requestedWidth < 100) || (requestedHeight && requestedHeight < 100)))
-    {
-        // Decide from the creation request, before touching the returned native
-        // object. HWND automatic sizes are resolved before native creation too.
         return;
     }
     ComPtr<ID3D11Device> device11;
@@ -398,20 +363,16 @@ void WrapSwapchainObject(IUnknown* device, IDXGISwapChain** output, UINT request
         {
             return;
         }
-        if (lite::SkipSmallSwapchains())
+        DXGI_SWAP_CHAIN_DESC desc{};
+        HRESULT hr;
         {
-            DXGI_SWAP_CHAIN_DESC desc{};
-            HRESULT hr;
-            {
-                NativeFactoryScope internal;
-                hr = (*output)->GetDesc(&desc);
-            }
-            // GTA creates an auxiliary small chain (180x44); wrapping it breaks the game.
-            // Use resolved native dimensions, so zero-sized requests for the main window are kept.
-            if (SUCCEEDED(hr) && (desc.BufferDesc.Width < 100 || desc.BufferDesc.Height < 100))
-            {
-                return;
-            }
+            NativeFactoryScope internal;
+            hr = (*output)->GetDesc(&desc);
+        }
+        // GTA creates an auxiliary small chain (180x44); wrapping it breaks the game.
+        if (SUCCEEDED(hr) && (desc.BufferDesc.Width < 100 || desc.BufferDesc.Height < 100))
+        {
+            return;
         }
         ComPtr<IDXGISwapChain4> native;
         if (FAILED((*output)->QueryInterface(IID_PPV_ARGS(&native))))

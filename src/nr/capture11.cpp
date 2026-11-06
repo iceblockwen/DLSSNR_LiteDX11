@@ -42,7 +42,6 @@ struct Registry
     std::mutex panelMutex;
     PreviewStatus status;
     DepthStatus depth;
-    float bridgeChainMs{};
     std::map<ID3D11DeviceContext*, NativeCaptureState> native;
     std::set<const void*> visiblePanels;
 };
@@ -105,18 +104,6 @@ void Info(ID3D11Resource* const* resources, const Guides& guides,
             D3D11_TEXTURE2D_DESC d{};
             t->GetDesc(&d);
             s.resources[n] = {d.Width, d.Height, unsigned(d.Format), true};
-        }
-    }
-}
-void Collect()
-{
-    auto& r = Global();
-    for (auto& [context, native] : r.native)
-    {
-        (void)context;
-        if (native.model)
-        {
-            native.model->RetireCompletedInputs();
         }
     }
 }
@@ -254,7 +241,7 @@ HRESULT Model11(NativeCaptureState& native, ID3D11DeviceContext* context, const 
             if (estimateMotion)
             {
                 const auto flowResult =
-                    native.modelFlow->RecordForNR(list, frame, payload->flow, options);
+                    native.modelFlow->Record(list, frame, payload->flow, options);
                 if (FAILED(flowResult))
                 {
                     return flowResult;
@@ -357,20 +344,10 @@ HRESULT Model11(NativeCaptureState& native, ID3D11DeviceContext* context, const 
         status.reason = "NR bridge submission failed; original frame preserved";
     }
     PublishPass(status);
-    if (hr == S_FALSE && !estimate)
+    if (estimate && hr != S_OK && flowRecorded)
     {
-        native.model->InvalidateHistory();
-    }
-    if (estimate && (hr == S_FALSE || (hr != S_OK && flowRecorded)))
-    {
-        if (hr == S_FALSE && !flowRecorded)
-        {
-            native.modelFlow->InvalidateHistory();
-        }
-        else
-        {
-            native.modelFlow->Reset();
-        }
+        // Recorded but not submitted: the flow pyramid and the model history are unusable.
+        native.modelFlow->Reset();
         native.model->InvalidateHistory();
     }
     return hr;
@@ -538,16 +515,6 @@ DepthStatus DepthSnapshot()
     std::lock_guard lock(Global().mutex);
     return Global().depth;
 }
-float BridgeChainMilliseconds()
-{
-    std::lock_guard lock(Global().mutex);
-    return Global().bridgeChainMs;
-}
-void PreviewResult(HRESULT hr)
-{
-    std::lock_guard lock(Global().mutex);
-    Global().status.previewError = hr;
-}
 void RetireCompleted()
 {
     RetireModelFeatures();
@@ -556,7 +523,6 @@ void RetireCompleted()
         return;
     }
     std::lock_guard lock(Global().mutex);
-    Collect();
     if (!ModelRequested() && modelCached.exchange(false))
     {
         for (auto& [key, native] : Global().native)
@@ -782,10 +748,6 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
                 native.generatedLatest = false;
             }
             Model11(native, context, input, true, nullptr, buffer.Get());
-            if (native.modelBridge)
-            {
-                Global().bridgeChainMs = native.modelBridge->ChainMilliseconds();
-            }
             return;
         }
         if (!PreviewActive())
@@ -822,7 +784,7 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
                     keep = payload;
                 }
                 const auto options = FlowOptions();
-                auto result = native.flow->RecordForNR(list, frame, payload->flow, options);
+                auto result = native.flow->Record(list, frame, payload->flow, options);
                 if (FAILED(result))
                 {
                     return result;
@@ -852,11 +814,8 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
             Global().status.resources[2] = {desc.Width, desc.Height,
                                             unsigned(DXGI_FORMAT_R16G16_FLOAT), true};
         }
-        if (hr == S_FALSE && !recorded)
-        {
-            native.flow->InvalidateHistory();
-        }
-        else if (hr != S_OK && recorded)
+        // A busy slot is not a discontinuity: keep the pyramid so the next frame resumes.
+        if (hr != S_OK && recorded)
         {
             native.flow->Reset();
         }

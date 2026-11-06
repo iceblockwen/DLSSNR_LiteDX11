@@ -120,6 +120,7 @@ BOOL WINAPI OnMessageW(LPMSG msg, HWND window, UINT first, UINT last)
 }
 decltype(&GetRawInputData) realRaw = GetRawInputData;
 decltype(&GetRawInputBuffer) realBuffer = GetRawInputBuffer;
+decltype(&RegisterRawInputDevices) realRegisterRaw = RegisterRawInputDevices;
 decltype(&PostMessageA) realPostA = PostMessageA;
 decltype(&PostMessageW) realPostW = PostMessageW;
 decltype(&ShowCursor) realShow = ShowCursor;
@@ -433,6 +434,48 @@ UINT WINAPI OnBuffer(PRAWINPUT data, PUINT size, UINT header)
     }
     return result;
 }
+// The reserved hotkey is only reachable through raw input when the game took the
+// keyboard away from the message queue. That registration is cached here: one
+// query per RegisterRawInputDevices call instead of three syscalls per packet.
+std::atomic<UINT_PTR> rawKeyboardTarget{};
+void RefreshRawKeyboardTarget()
+{
+    UINT_PTR target{};
+    UINT count{};
+    if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) != UINT(-1) && count)
+    {
+        std::vector<RAWINPUTDEVICE> devices(count);
+        if (GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) != UINT(-1))
+        {
+            for (const auto& device : devices)
+            {
+                if (device.usUsagePage == 1 && device.usUsage == 6 &&
+                    (device.dwFlags & RIDEV_NOLEGACY) == RIDEV_NOLEGACY)
+                {
+                    if (!device.hwndTarget)
+                    {
+                        target = 1; // every window
+                        break;
+                    }
+                    if (!target)
+                    {
+                        target = reinterpret_cast<UINT_PTR>(device.hwndTarget);
+                    }
+                }
+            }
+        }
+    }
+    rawKeyboardTarget.store(target, std::memory_order_relaxed);
+}
+BOOL WINAPI OnRegisterRaw(PCRAWINPUTDEVICE devices, UINT count, UINT size)
+{
+    const BOOL result = realRegisterRaw(devices, count, size);
+    if (result)
+    {
+        RefreshRawKeyboardTarget();
+    }
+    return result;
+}
 BOOL WINAPI OnPostA(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     if (Block() && window == owner.load() && message == WM_MOUSEMOVE)
@@ -524,6 +567,7 @@ void InstallPanelInput(PanelQueueRoute route)
                            {reinterpret_cast<PVOID*>(&realMessageW), reinterpret_cast<PVOID>(OnMessageW)},
                            {reinterpret_cast<PVOID*>(&realRaw), reinterpret_cast<PVOID>(OnRaw)},
                            {reinterpret_cast<PVOID*>(&realBuffer), reinterpret_cast<PVOID>(OnBuffer)},
+                           {reinterpret_cast<PVOID*>(&realRegisterRaw), reinterpret_cast<PVOID>(OnRegisterRaw)},
                            {reinterpret_cast<PVOID*>(&realPostA), reinterpret_cast<PVOID>(OnPostA)},
                            {reinterpret_cast<PVOID*>(&realPostW), reinterpret_cast<PVOID>(OnPostW)},
                        };
@@ -535,8 +579,15 @@ void InstallPanelInput(PanelQueueRoute route)
                        const bool showReady = Attach(reinterpret_cast<PVOID*>(&realShow), reinterpret_cast<PVOID>(OnShow));
                        const bool shapeReady = Attach(reinterpret_cast<PVOID*>(&realCursor), reinterpret_cast<PVOID>(OnCursor));
                        nativeHooks = showReady && shapeReady;
+                       // A game that registered raw devices before this install is covered here.
+                       RefreshRawKeyboardTarget();
                        InstallPanelDirectInput();
                    });
+}
+bool PanelRawHotkeyWatched(HWND window)
+{
+    const auto target = rawKeyboardTarget.load(std::memory_order_relaxed);
+    return target == 1 || (target && target == reinterpret_cast<UINT_PTR>(window));
 }
 bool PanelInputCaptured(HWND window)
 {
@@ -775,6 +826,12 @@ bool PanelRawInput(HWND window, HRAWINPUT handle)
 }
 bool PanelRawHotkey(HWND window, HRAWINPUT handle, UINT& message)
 {
+    // Query only for the reserved hotkey. A keyboard registered NOLEGACY must
+    // still be able to open a hidden panel; never toggle twice in legacy mode.
+    if (!PanelRawHotkeyWatched(window))
+    {
+        return false;
+    }
     RAWINPUT input{};
     UINT bytes = sizeof(input);
     const auto result = realRaw(handle, RID_INPUT, &input, &bytes, sizeof(RAWINPUTHEADER));
@@ -783,28 +840,8 @@ bool PanelRawHotkey(HWND window, HRAWINPUT handle, UINT& message)
     {
         return false;
     }
-    // Query only for the reserved hotkey. A keyboard registered NOLEGACY must
-    // still be able to open a hidden panel; never toggle twice in legacy mode.
-    UINT count{};
-    if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) == UINT(-1) || !count)
-    {
-        return false;
-    }
-    std::vector<RAWINPUTDEVICE> devices(count);
-    if (GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) == UINT(-1))
-    {
-        return false;
-    }
-    for (const auto& device : devices)
-    {
-        if (device.usUsagePage == 1 && device.usUsage == 6 &&
-            (device.dwFlags & RIDEV_NOLEGACY) == RIDEV_NOLEGACY && (!device.hwndTarget || device.hwndTarget == window))
-        {
-            message = (input.data.keyboard.Flags & RI_KEY_BREAK) ? WM_KEYUP : WM_KEYDOWN;
-            return true;
-        }
-    }
-    return false;
+    message = (input.data.keyboard.Flags & RI_KEY_BREAK) ? WM_KEYUP : WM_KEYDOWN;
+    return true;
 }
 void UpdatePanelPointer(HWND window)
 {

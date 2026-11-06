@@ -11,6 +11,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# Cross-file inlining of the small helpers (Transition, ViewFormat, descriptor
+# lookups) and one code pass instead of many small translation units.
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 
 add_library(detours STATIC IMPORTED)
 set_target_properties(detours PROPERTIES
@@ -25,7 +28,8 @@ add_library(imgui STATIC
   third_party/imgui/backends/imgui_impl_win32.cpp
   third_party/imgui/backends/imgui_impl_dx11.cpp)
 target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends)
-target_compile_definitions(imgui PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
+target_compile_definitions(imgui PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN IMGUI_IMPL_WIN32_DISABLE_GAMEPAD
+  IMGUI_DISABLE_DEBUG_TOOLS IMGUI_DISABLE_DEMO_WINDOWS)
 
 # Preserve the runtime compiler flags while moving all plugin HLSL compilation
 # to configure time. Device-specific PSOs are still created at runtime.
@@ -82,8 +86,8 @@ add_library(litedx11_frames STATIC
   src/nr/pass.cpp)
 target_include_directories(litedx11_frames PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(litedx11_frames PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_compile_options(litedx11_frames PRIVATE /W4 /EHsc /utf-8)
-target_link_libraries(litedx11_frames PUBLIC d3d11 d3d12 dxgi.lib d3dcompiler)
+target_compile_options(litedx11_frames PRIVATE /W4 /EHsc /utf-8 /Gy /Gw)
+target_link_libraries(litedx11_frames PUBLIC d3d11 d3d12 dxgi.lib)
 
 add_library(litedx11_runtime SHARED
   src/runtime.cpp
@@ -104,11 +108,11 @@ add_library(litedx11_runtime SHARED
   src/nr/depth_hooks.cpp)
 set_target_properties(litedx11_runtime PROPERTIES OUTPUT_NAME "nvngx.dll_litedx11")
 target_link_libraries(litedx11_runtime PRIVATE
-  litedx11_frames detours imgui d3d11 d3d12 dxgi.lib d3dcompiler
-  user32 dwmapi dinput8 dxguid advapi32 version)
+  litedx11_frames detours imgui d3d11 d3d12 dxgi.lib
+  user32 dinput8 dxguid advapi32)
 target_compile_definitions(litedx11_runtime PRIVATE
   UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN "LITE_VERSION=\"${PROJECT_VERSION}\"")
-target_compile_options(litedx11_runtime PRIVATE /W4 /EHsc /utf-8)
+target_compile_options(litedx11_runtime PRIVATE /W4 /EHsc /utf-8 /Gy /Gw)
 
 # Every proxy DLL forwards the system exports through the same generated stubs.
 # <name>.def is the only place an export is declared: the name table, the jump

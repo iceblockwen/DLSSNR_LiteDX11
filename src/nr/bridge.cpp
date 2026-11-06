@@ -6,8 +6,6 @@
 #include <dxgi1_6.h>
 #include "nr_shaders.hpp"
 #include <vector>
-#include <cstring>
-#include <limits>
 #include <map>
 #include <mutex>
 namespace lite::nr
@@ -195,8 +193,8 @@ struct Bridge11::Impl
         ComPtr<ID3D12Resource> result;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> list;
-        ComPtr<ID3D12QueryHeap> stamps; // Level 2 only: one timestamp pair per submission
-        ComPtr<ID3D12Resource> stampData;
+        // Recorder resource whose device/descriptor checks already passed.
+        ID3D12Resource* checkedResult{};
         UINT64 completion{};
     };
     struct Retired
@@ -211,11 +209,8 @@ struct Bridge11::Impl
     ComPtr<ID3D12Resource> queuedPreview;
     D3D12_RESOURCE_STATES previewState{};
     UINT64 serial{};
-    UINT64 timestampFrequency{};
-    std::atomic<float> chainMs{0}; // Level 2: last completed bridge recording, GPU milliseconds
     UINT64& value;
     bool& failed;
-    const wchar_t* operation = L"Idle";
     explicit Impl(ID3D11DeviceContext* input) : transport(AcquireTransport(input)),
                                                 device11(transport->device11), context(transport->context), device12(transport->device12),
                                                 queue(transport->queue), fence11(transport->fence11), fence12(transport->fence12),
@@ -232,51 +227,7 @@ struct Bridge11::Impl
         ThrowIfFailed(device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&slot->allocator)));
         ThrowIfFailed(device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, slot->allocator.Get(), nullptr, IID_PPV_ARGS(&slot->list)));
         ThrowIfFailed(slot->list->Close());
-        // Timing is verbose-only work: no query heap exists at other levels.
-        if (DetailLevel() >= Detail::Verbose)
-        {
-            if (!timestampFrequency)
-            {
-                ThrowIfFailed(queue->GetTimestampFrequency(&timestampFrequency));
-            }
-            D3D12_QUERY_HEAP_DESC heap{};
-            heap.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-            heap.Count = 2;
-            ThrowIfFailed(device12->CreateQueryHeap(&heap, IID_PPV_ARGS(&slot->stamps)));
-            D3D12_HEAP_PROPERTIES props{};
-            props.Type = D3D12_HEAP_TYPE_READBACK;
-            D3D12_RESOURCE_DESC buffer{};
-            buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            buffer.Width = 2 * sizeof(UINT64);
-            buffer.Height = 1;
-            buffer.DepthOrArraySize = 1;
-            buffer.MipLevels = 1;
-            buffer.SampleDesc.Count = 1;
-            buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            ThrowIfFailed(device12->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&slot->stampData)));
-        }
         return slot;
-    }
-    // Valid only after this slot's submission signal completed.
-    void ReadStamps(Slot& slot)
-    {
-        if (!slot.stamps || !slot.stampData || !timestampFrequency)
-        {
-            return;
-        }
-        D3D12_RANGE range{0, 2 * sizeof(UINT64)};
-        void* data{};
-        if (FAILED(slot.stampData->Map(0, &range, &data)) || !data)
-        {
-            return;
-        }
-        const auto stamps = static_cast<const UINT64*>(data);
-        if (stamps[1] > stamps[0])
-        {
-            chainMs = float(double(stamps[1] - stamps[0]) * 1000.0 / double(timestampFrequency));
-        }
-        const D3D12_RANGE written{0, 0};
-        slot.stampData->Unmap(0, &written);
     }
     HRESULT Share(Twin& t, D3D11_TEXTURE2D_DESC desc, bool converted = false)
     {
@@ -476,7 +427,25 @@ struct Bridge11::Impl
         // Slot fence has completed; only the source owner changes, not the shared twin.
         for (unsigned n = 0; n < 3; ++n)
         {
-            s.twins[n].source = input.resources[n];
+            auto& twin = s.twins[n];
+            if (twin.source.Get() == input.resources[n])
+            {
+                continue;
+            }
+            twin.source = input.resources[n];
+            // A typeless source is sampled directly; that view names the old texture.
+            if (twin.view && !twin.backup && twin.source)
+            {
+                D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+                srv.Format = ViewFormat(twin.desc.Format, n == 1);
+                srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+                srv.Texture2D.MipLevels = 1;
+                twin.view.Reset();
+                if (FAILED(device11->CreateShaderResourceView(twin.source.Get(), &srv, &twin.view)))
+                {
+                    return false; // the caller rebuilds the slot from scratch
+                }
+            }
         }
         s.exposure.source = input.exposureResource;
         return true;
@@ -509,7 +478,6 @@ struct Bridge11::Impl
     HRESULT Process(const Input11& input, unsigned width, unsigned height, DXGI_FORMAT format, const Bridge11::Recorder& record)
     {
         std::lock_guard lock(transport->mutex);
-        operation = L"Validate input / completion";
         if (failed)
         {
             return DXGI_ERROR_DEVICE_REMOVED;
@@ -530,13 +498,10 @@ struct Bridge11::Impl
         {
             return S_FALSE;
         }
-        // This slot's previous submission is finished, so its timestamps are readable.
-        ReadStamps(*slot);
         for (auto it = retired.begin(); it != retired.end();)
         {
             if (it->completion <= completed)
             {
-                ReadStamps(*it->slot);
                 it = retired.erase(it);
             }
             else
@@ -546,7 +511,6 @@ struct Bridge11::Impl
         }
         if (!Matches(*slot, input, width, height, format))
         {
-            operation = L"Allocate shared textures";
             auto fresh = NewSlot();
             // A game-declared depth subrect (guide extents/origins) is expressed in source pixels and
             // reaches the model as its Depth region, so such a twin keeps the source size. Only
@@ -595,7 +559,6 @@ struct Bridge11::Impl
         {
             slot->frame.converted[n] = slot->twins[n].converted;
         }
-        operation = L"Reset command allocator / list";
         // Validate and allocate descriptors before recording copies on the game context.
         ThrowIfFailed(slot->allocator->Reset());
         ThrowIfFailed(slot->list->Reset(slot->allocator.Get(), nullptr));
@@ -615,13 +578,8 @@ struct Bridge11::Impl
             Transition(slot->list.Get(), r.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         Transition(slot->list.Get(), slot->frame.exposureTexture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        if (slot->stamps)
-        {
-            slot->list->EndQuery(slot->stamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
-        }
         ID3D12Resource* result{};
         D3D12_RESOURCE_STATES resultState{};
-        operation = L"Record flow / model";
         queuedPreview.Reset();
         auto hr = record(slot->list.Get(), slot->frame, slot->keepAlive, result, resultState);
         if (failed)
@@ -639,16 +597,22 @@ struct Bridge11::Impl
             recording.Close();
             return E_POINTER;
         }
-        operation = L"Validate bridge result dimensions / format";
-        const auto resultDesc = result->GetDesc();
-        ComPtr<ID3D12Device> resultDevice;
-        ThrowIfFailed(result->GetDevice(IID_PPV_ARGS(&resultDevice)));
-        if (resultDevice.Get() != device12.Get() || resultDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-            resultDesc.DepthOrArraySize != 1 || resultDesc.MipLevels != 1 || resultDesc.SampleDesc.Count != 1 ||
-            resultDesc.Width != width || resultDesc.Height != height || !CopyCompatible(resultDesc.Format, format))
+        // The recorder returns the same texture every frame, so its device and
+        // descriptor are checked once per pointer instead of per submission.
+        if (slot->checkedResult != result)
         {
-            recording.Close();
-            return E_INVALIDARG;
+            slot->checkedResult = nullptr;
+            const auto resultDesc = result->GetDesc();
+            ComPtr<ID3D12Device> resultDevice;
+            ThrowIfFailed(result->GetDevice(IID_PPV_ARGS(&resultDevice)));
+            if (resultDevice.Get() != device12.Get() || resultDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+                resultDesc.DepthOrArraySize != 1 || resultDesc.MipLevels != 1 || resultDesc.SampleDesc.Count != 1 ||
+                resultDesc.Width != width || resultDesc.Height != height || !CopyCompatible(resultDesc.Format, format))
+            {
+                recording.Close();
+                return E_INVALIDARG;
+            }
+            slot->checkedResult = result;
         }
         slot->result = result;
         slot->previewResult.Reset();
@@ -696,7 +660,6 @@ struct Bridge11::Impl
                 previewImage.Reset();
             }
         }
-        operation = L"Copy DX11 inputs / signal ready";
         for (unsigned n = 0; n < 3; ++n)
         {
             Fill(slot->twins[n], n);
@@ -732,12 +695,6 @@ struct Bridge11::Impl
             Transition(slot->list.Get(), r.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         }
         Transition(slot->list.Get(), slot->frame.exposureTexture.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        if (slot->stamps)
-        {
-            slot->list->EndQuery(slot->stamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
-            slot->list->ResolveQueryData(slot->stamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, slot->stampData.Get(), 0);
-        }
-        operation = L"Close command list";
         ThrowIfFailed(recording.Close());
         // Never add a native GPU wait unless the submission signal succeeded.
         ID3D12CommandList* lists[]{slot->list.Get()};
@@ -757,7 +714,6 @@ struct Bridge11::Impl
         } submission{failed};
         queue->ExecuteCommandLists(1, lists);
         slot->completion = UINT64_MAX;
-        operation = L"Signal submitted DX12 work";
         const auto done = ++value;
         hr = queue->Signal(fence12.Get(), done);
         slot->frame.ticket->Submit(SUCCEEDED(hr) ? fence12.Get() : nullptr, SUCCEEDED(hr) ? done : 0, queue.Get());
@@ -766,7 +722,6 @@ struct Bridge11::Impl
             failed = true;
             return hr;
         }
-        operation = L"DX11 GPU wait / result view";
         ThrowIfFailed(context->Wait(fence11.Get(), done));
         // The completion signal rides the game's own batch: it is reached when the game submits,
         // which always happens before the next Process call. Flushing here would only split the
@@ -884,13 +839,5 @@ ComPtr<ID3D11ShaderResourceView> Bridge11::PreviewImage() const
 ID3D12Device* Bridge11::Device() const
 {
     return impl->device12.Get();
-}
-const wchar_t* Bridge11::LastOperation() const
-{
-    return impl->operation;
-}
-float Bridge11::ChainMilliseconds() const
-{
-    return impl->chainMs.load();
 }
 }
