@@ -85,8 +85,8 @@ class Preview12
     ComPtr<ID3D12Resource> image;
 
   private:
-    HRESULT RecordTile(ID3D12GraphicsCommandList*, const Frame12&, unsigned input, unsigned outputWidth,
-                       unsigned outputHeight);
+    HRESULT RecordTile(ID3D12GraphicsCommandList*, ID3D12Resource* source, const Guides&, bool generatedMotion,
+                       float frameTimeMs, unsigned input, unsigned outputWidth, unsigned outputHeight);
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;

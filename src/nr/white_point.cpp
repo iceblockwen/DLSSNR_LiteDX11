@@ -24,38 +24,46 @@ void WhitePoint::Reset()
 }
 void WhitePoint::Consume(std::span<const float> grid)
 {
-    std::vector<float> tiles;
-    tiles.reserve(grid.size());
+    // One pass: keep the samples, and accumulate the sum, log-sum and peak while
+    // filtering. Order statistics below do not need a full sort.
+    samples.clear();
+    if (samples.capacity() < grid.size())
+    {
+        samples.reserve(grid.size());
+    }
+    double sum = 0, total = 0;
+    float peak = 0;
     for (size_t n = 1; n < grid.size(); ++n)
     {
-        if (std::isfinite(grid[n]) && grid[n] >= 0)
+        const float v = grid[n];
+        if (!std::isfinite(v) || v < 0)
         {
-            tiles.push_back(grid[n]);
+            continue;
         }
+        samples.push_back(v);
+        sum += std::log((std::max)(double(v), 1e-12));
+        total += v;
+        peak = (std::max)(peak, v);
     }
-    if (tiles.size() < 16)
+    if (samples.size() < 16)
     {
         measured = false;
         status.statisticsValid = false;
         return;
     }
-    std::sort(tiles.begin(), tiles.end());
+    const auto count = double(samples.size());
     auto at = [&](double q)
     {
-        return tiles[size_t(q * double(tiles.size() - 1))];
+        const auto index = size_t(q * (count - 1));
+        std::nth_element(samples.begin(), samples.begin() + index, samples.end());
+        return samples[index];
     };
     status.p50 = at(.5);
     status.p90 = at(.9);
     status.p99 = at(.99);
-    status.peak = tiles.back();
-    double sum = 0, total = 0;
-    for (float v : tiles)
-    {
-        sum += std::log((std::max)(double(v), 1e-12));
-        total += v;
-    }
-    status.mean = float(total / double(tiles.size()));
-    status.logAverage = float(std::exp(sum / double(tiles.size())));
+    status.peak = peak;
+    status.mean = float(total / count);
+    status.logAverage = float(std::exp(sum / count));
     measured = status.statisticsValid = true;
 }
 WhiteStatus WhitePoint::Resolve(const WhiteSettings& s, const Exposure& e, float dt, bool reset)

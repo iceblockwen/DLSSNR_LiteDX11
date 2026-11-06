@@ -54,6 +54,9 @@ class WhitePoint
     bool started{}, measured{};
     WhiteMode mode = WhiteMode::Game;
     WhiteSource previous = WhiteSource::Waiting;
+    // Reused across measurements: the grid is the same size every time, so the
+    // capacity survives and a measurement allocates nothing.
+    std::vector<float> samples;
 };
 struct WhiteReadback
 {

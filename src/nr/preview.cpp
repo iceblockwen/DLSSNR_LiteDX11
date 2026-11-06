@@ -174,12 +174,14 @@ HRESULT Preview12::Record(ID3D12GraphicsCommandList* list, const Frame12& frame)
         {
             tiles[n] = std::make_unique<Preview12>(device.Get());
         }
-        auto tileFrame = frame;
+        // Tile 2 keeps the caller's display scale; the others are shown at 1:1.
+        auto guides = frame.guides;
         if (n != 2)
         {
-            tileFrame.guides.displayScale = 1;
+            guides.displayScale = 1;
         }
-        const auto hr = tiles[n]->RecordTile(list, tileFrame, n, w, h);
+        const auto hr = tiles[n]->RecordTile(list, frame.resources[n].Get(), guides, frame.generatedMotion,
+                                             frame.frameTimeMs, n, w, h);
         if (FAILED(hr))
         {
             error = hr;
@@ -198,14 +200,14 @@ HRESULT Preview12::Record(ID3D12GraphicsCommandList* list, const Frame12& frame)
     return error;
 }
 // One tile: colour (0), depth (1) or motion vectors (2), scaled to the caller's extents.
-HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, const Frame12& frame, unsigned input,
-                              unsigned outputWidth, unsigned outputHeight)
+HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, ID3D12Resource* source, const Guides& g,
+                              bool generatedMotion, float frameTimeMs, unsigned input, unsigned outputWidth,
+                              unsigned outputHeight)
 {
     if (!list || input > 2)
     {
         return E_INVALIDARG;
     }
-    auto* source = frame.resources[input].Get();
     if (!source)
     {
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
@@ -216,7 +218,6 @@ HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, const Frame12& fr
     {
         return E_NOTIMPL;
     }
-    const auto& g = frame.guides;
     if (!ShaderViewCompatible(desc.Format, input == 1))
     {
         return E_NOTIMPL;
@@ -283,7 +284,10 @@ HRESULT Preview12::RecordTile(ID3D12GraphicsCommandList* list, const Frame12& fr
         float sx, sy, gain, pad;
     };
     const Constants c{input + 1u, g.originX[input], g.originY[input], sw, sh, ow, oh,
-                      (g.depthInverted ? 1u : 0u) | (g.flipDepth ? 2u : 0u) | (g.depthContrast ? 4u : 0u) | (frame.generatedMotion ? 8u : 0u), g.motionScaleX, g.motionScaleY, g.displayScale, std::isfinite(frame.frameTimeMs) && frame.frameTimeMs > 0 ? frame.frameTimeMs : 16.6667f};
+                      (g.depthInverted ? 1u : 0u) | (g.flipDepth ? 2u : 0u) | (g.depthContrast ? 4u : 0u) |
+                          (generatedMotion ? 8u : 0u),
+                      g.motionScaleX, g.motionScaleY, g.displayScale,
+                      std::isfinite(frameTimeMs) && frameTimeMs > 0 ? frameTimeMs : 16.6667f};
     Transition(list, image.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     auto* h = heap.Get();
     list->SetDescriptorHeaps(1, &h);
