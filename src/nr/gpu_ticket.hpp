@@ -22,7 +22,7 @@ class GpuTicket
         value = v;
         submissionQueue = queue;
         state = State::Submitted;
-        if (timingRequested && queue && FAILED(queue->GetTimestampFrequency(&frequency)))
+        if (timingRequested && queue && !frequency && FAILED(queue->GetTimestampFrequency(&frequency)))
         {
             frequency = 0;
         }

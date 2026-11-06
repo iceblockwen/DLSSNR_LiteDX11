@@ -8,6 +8,8 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <utility>
+#include <vector>
 namespace lite::nr
 {
 namespace
@@ -120,8 +122,30 @@ struct Generation
     std::array<D3D12_RESOURCE_STATES, 8> currentState{}, previousState{}, aState{}, bState{};
     std::array<D3D12_RESOURCE_STATES, 4> depthState{};
     D3D12_RESOURCE_STATES prevDepthState{}, quarterState{}, halfState{}, uvMotionState{}, noiseState{};
-    D3D12_RESOURCE_STATES* State(ID3D12Resource* resource)
+    // One persistent RTV per render-target texture, written when the generation is created.
+    // A descriptor that no draw rewrites cannot be rebound by a later draw in the same list.
+    ComPtr<ID3D12DescriptorHeap> rtv;
+    UINT rtvStride{};
+    std::vector<std::pair<ID3D12Resource*, UINT>> rtvSlots;
+    D3D12_CPU_DESCRIPTOR_HANDLE Rtv(ID3D12Resource* resource) const
     {
+        D3D12_CPU_DESCRIPTOR_HANDLE handle{};
+        if (!rtv || !resource)
+        {
+            return handle;
+        }
+        handle = rtv->GetCPUDescriptorHandleForHeapStart();
+        for (const auto& entry : rtvSlots)
+        {
+            if (entry.first == resource)
+            {
+                handle.ptr += uint64_t(entry.second) * rtvStride;
+                return handle;
+            }
+        }
+        return {};
+    }
+    D3D12_RESOURCE_STATES* State(ID3D12Resource* resource)    {
         auto pool = [&](auto& resources, auto& states) -> D3D12_RESOURCE_STATES*
         {
             for (size_t n = 0; n < states.size(); ++n)
@@ -183,10 +207,9 @@ struct Recording
 {
     std::shared_ptr<Generation> generation;
     std::shared_ptr<Pipelines> pipelines;
-    ComPtr<ID3D12DescriptorHeap> heap, rtv;
+    ComPtr<ID3D12DescriptorHeap> heap;
     std::array<std::array<ID3D12Resource*, 7>, DrawCount> srvSource{};
     std::array<std::array<DXGI_FORMAT, 7>, DrawCount> srvFormat{};
-    std::array<std::array<ID3D12Resource*, 2>, StageCount> rtvSource{};
     BarrierBatch barriers;
     unsigned draws{};
     bool stateSet{};
@@ -275,6 +298,46 @@ struct DenseFlow12::Impl
         // nothing but the removed debug view, so neither texture is allocated any more.
         g->uvMotion = Make(device.Get(), w, h, DXGI_FORMAT_R16G16_FLOAT);
         g->noise = Make(device.Get(), 256, 256, DXGI_FORMAT_R8_UNORM);
+        // Render target views belong to the textures, not to a stage: write them once
+        // here so no recording ever rewrites a descriptor a submitted list still reads.
+        std::vector<ID3D12Resource*> renderTargets;
+        for (const auto& texture : g->current)
+        {
+            renderTargets.push_back(texture.Get());
+        }
+        for (const auto& texture : g->previous)
+        {
+            renderTargets.push_back(texture.Get());
+        }
+        for (const auto& texture : g->depth)
+        {
+            renderTargets.push_back(texture.Get());
+        }
+        for (const auto& texture : g->a)
+        {
+            renderTargets.push_back(texture.Get());
+        }
+        for (const auto& texture : g->b)
+        {
+            if (texture)
+            {
+                renderTargets.push_back(texture.Get());
+            }
+        }
+        renderTargets.push_back(g->quarter.Get());
+        renderTargets.push_back(g->half.Get());
+        renderTargets.push_back(g->uvMotion.Get());
+        renderTargets.push_back(g->prevDepth.Get());
+        D3D12_DESCRIPTOR_HEAP_DESC viewHeap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, UINT(renderTargets.size()), D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        ThrowIfFailed(device->CreateDescriptorHeap(&viewHeap, IID_PPV_ARGS(&g->rtv)));
+        g->rtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        auto view = g->rtv->GetCPUDescriptorHandleForHeapStart();
+        for (auto* texture : renderTargets)
+        {
+            device->CreateRenderTargetView(texture, nullptr, view);
+            g->rtvSlots.push_back({texture, UINT(g->rtvSlots.size())});
+            view.ptr += g->rtvStride;
+        }
         D3D12_RESOURCE_DESC upload{};
         upload.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         upload.Width = sizeof(FlowNoise);
@@ -345,18 +408,15 @@ struct DenseFlow12::Impl
         }
         unsigned count = 0;
         std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> targets{};
-        auto rt = record.rtv->GetCPUDescriptorHandleForHeapStart();
-        const auto rtStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        rt.ptr += uint64_t(stage) * 2 * rtStride;
         for (auto* r : outputs)
         {
-            if (record.rtvSource[stage][count] != r)
+            targets[count] = g.Rtv(r);
+            if (!targets[count].ptr)
             {
-                device->CreateRenderTargetView(r, nullptr, rt);
-                record.rtvSource[stage][count] = r;
+                // A missing slot would silently render nowhere: every output texture
+                // owns one RTV for the whole generation.
+                throw E_UNEXPECTED;
             }
-            targets[count] = rt;
-            rt.ptr += rtStride;
             ++count;
         }
         Constants constants{{w, h}, {g.w, g.h}, level, radius, dilation, unsigned(g.reversed), unsigned(g.flip), unsigned(!g.frames), unsigned(g.settings.logarithmic), g.settings.farPlane, g.settings.fov, g.settings.depthMultiplier, 0, {g.guides.originX[0], g.guides.originY[0]}, {g.guides.originX[1], g.guides.originY[1]}, {g.guides.width[1], g.guides.height[1]}, {0, 0}, {g.settings.depthScaleX, g.settings.depthScaleY}, {g.settings.depthOffsetX, g.settings.depthOffsetY}, {g.settings.depthPixelOffsetX, g.settings.depthPixelOffsetY}, {0, 0}, 0};
@@ -365,6 +425,7 @@ struct DenseFlow12::Impl
             auto* heap = record.heap.Get();
             list->SetDescriptorHeaps(1, &heap);
             list->SetGraphicsRootSignature(pipelines->root.Get());
+            list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             record.stateSet = true;
         }
         list->SetPipelineState(pipelines->pso[stage].Get());
@@ -375,7 +436,6 @@ struct DenseFlow12::Impl
         list->RSSetViewports(1, &viewport);
         list->RSSetScissorRects(1, &scissor);
         list->OMSetRenderTargets(count, targets.data(), FALSE, nullptr);
-        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list->DrawInstanced(3, 1, 0, 0);
     }
 };
@@ -453,13 +513,13 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
         // recording, never twice for the thirty draws inside it.
         record->stateSet = false;
         record->draws = 0;
+        record->barriers.Bind(list);
         // A new generation reallocates every texture; descriptors cached for the
         // previous set must not be compared against the recycled addresses.
         if (record->generation.get() != impl->generation.get())
         {
             record->srvSource = {};
             record->srvFormat = {};
-            record->rtvSource = {};
             // A failed recording abandons its generation midway; the collected
             // transitions were never executed and must not outlive it.
             record->barriers.Discard();
@@ -471,12 +531,6 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
             ThrowIfFailed(impl->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&record->heap)));
         }
         owned = record;
-        if (!record->rtv)
-        {
-            // One pair per stage plus the first-frame clear slot.
-            D3D12_DESCRIPTOR_HEAP_DESC heap{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, StageCount * 2 + 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
-            ThrowIfFailed(impl->device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&record->rtv)));
-        }
         if (!g.noiseUploaded)
         {
             Move(list, g, *record, g.noise.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
@@ -516,10 +570,8 @@ HRESULT DenseFlow12::Record(ID3D12GraphicsCommandList* list, const Frame12& fram
             {
                 Move(list, g, *record, r, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 record->barriers.Flush(list);
-                // Its own slot: the cached per-stage views must survive this clear.
-                auto handle = record->rtv->GetCPUDescriptorHandleForHeapStart();
-                handle.ptr += uint64_t(StageCount * 2) * impl->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-                impl->device->CreateRenderTargetView(r, nullptr, handle);
+                // Its own slot: every texture owns one RTV for the whole generation.
+                auto handle = g.Rtv(r);
                 list->ClearRenderTargetView(handle, zero, 0, nullptr);
             };
             // Every level: a restarted history must not read a pyramid from the frame before.

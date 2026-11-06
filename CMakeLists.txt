@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 set(ENV{VSLANG} 1033)
-project(DLSSNR_LiteDX11 VERSION 0.2.0 LANGUAGES C CXX ASM_MASM)
+project(DLSSNR_LiteDX11 VERSION 1.0.0 LANGUAGES C CXX ASM_MASM)
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Windows x64 with MSVC required")
 endif()
@@ -79,6 +79,7 @@ configure_file(src/nr/dense_shader.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated
 
 add_library(litedx11_frames STATIC
   src/nr/bridge.cpp
+  src/nr/gpu_util.cpp
   src/nr/preview.cpp
   src/nr/dense_flow.cpp
   src/nr/depth11.cpp
@@ -92,6 +93,7 @@ target_link_libraries(litedx11_frames PUBLIC d3d11 d3d12 dxgi.lib)
 add_library(litedx11_runtime SHARED
   src/runtime.cpp
   src/config.cpp
+  src/graphics.cpp
   src/hooks.cpp
   src/ui/panel.cpp
   src/ui/panel_ui.cpp

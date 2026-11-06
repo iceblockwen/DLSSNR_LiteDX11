@@ -1,4 +1,5 @@
 #include "panel_impl.hpp"
+#include "../graphics_registry.hpp"
 #include "ui_widgets.hpp"
 #include "../input/input.hpp"
 #include "../input/input_keyboard.hpp"
@@ -31,22 +32,6 @@ bool WindowFocused(HWND window)
     return window && GetGUIThreadInfo(GetWindowThreadProcessId(window, nullptr), &info) &&
            info.hwndFocus == window;
 }
-// Process-lifetime registry avoids GPU work during DLL destruction under loader lock.
-struct Registry
-{
-    std::recursive_mutex mutex;
-    std::map<IDXGISwapChain*, std::shared_ptr<lite::Panel>> panels;
-};
-Registry& Global()
-{
-    static auto* registry = new Registry;
-    return *registry;
-}
-}
-
-std::recursive_mutex& GraphicsMutex()
-{
-    return Global().mutex;
 }
 
 void Panel::Impl::SyncPreviewDemand()
@@ -100,7 +85,7 @@ bool Panel::Impl::RouteKeyboard(MSG& message, bool removed)
     {
         return false;
     }
-    std::unique_lock lock(Global().mutex);
+    std::unique_lock lock(Graphics().mutex);
     const auto route = Windows().Find(message.hwnd);
     if (!route || !route->Active() ||
         !PanelKeyboardQueue(message.hwnd, message.message, message.wParam, message.lParam))
@@ -139,7 +124,7 @@ LRESULT CALLBACK Panel::Impl::WindowProc(HWND window, UINT message, WPARAM wpara
     {
         PanelRawHotkey(window, reinterpret_cast<HRAWINPUT>(lparam), rawHotkey);
     }
-    std::unique_lock lock(Global().mutex);
+    std::unique_lock lock(Graphics().mutex);
     auto* route = Windows().Find(window);
     if (!route)
     {
@@ -467,120 +452,5 @@ void Panel::AfterResize(HRESULT hr)
 void Panel::Fail(HRESULT error) noexcept
 {
     impl->Failure(error);
-}
-void TrackSwapchain(IDXGISwapChain* swap, IUnknown* device) noexcept
-{
-    try
-    {
-        ComPtr<ID3D11Device> device11;
-        if (!device || FAILED(device->QueryInterface(IID_PPV_ARGS(&device11))))
-        {
-            return;
-        }
-        std::lock_guard lock(Global().mutex);
-        if (Global().panels.contains(swap))
-        {
-            return;
-        }
-        auto panel = std::make_shared<Panel>(swap, device11.Get());
-        Global().panels.emplace(swap, std::move(panel));
-    }
-    catch (HRESULT)
-    {
-    }
-    catch (...)
-    {
-    }
-}
-void DrawSwapchain(IDXGISwapChain* swap, UINT flags) noexcept
-{
-    if (flags & DXGI_PRESENT_TEST)
-    {
-        return;
-    }
-    try
-    {
-        // The panel is kept alive by the reference; the NR chain then runs without the
-        // registry lock, so window messages never wait for a frame's worth of GPU work.
-        std::shared_ptr<Panel> panel;
-        {
-            std::lock_guard lock(Global().mutex);
-            const auto it = Global().panels.find(swap);
-            if (it == Global().panels.end())
-            {
-                return;
-            }
-            panel = it->second;
-        }
-        panel->ProcessFrame();
-        std::lock_guard lock(Global().mutex);
-        panel->DrawUi();
-    }
-    catch (...)
-    {
-    }
-}
-HRESULT ResizeSwapchain(IDXGISwapChain* swap, bool before, HRESULT result) noexcept
-{
-    try
-    {
-        std::lock_guard lock(Global().mutex);
-        const auto it = Global().panels.find(swap);
-        if (it == Global().panels.end())
-        {
-            return S_OK;
-        }
-        if (before)
-        {
-            it->second->BeforeResize();
-        }
-        else
-        {
-            it->second->AfterResize(result);
-        }
-        return S_OK;
-    }
-    catch (HRESULT hr)
-    {
-        FailSwapchain(swap, hr);
-        return hr;
-    }
-    catch (...)
-    {
-        FailSwapchain(swap, E_FAIL);
-        return E_FAIL;
-    }
-}
-void FailSwapchain(IDXGISwapChain* swap, HRESULT error) noexcept
-{
-    try
-    {
-        std::lock_guard lock(Global().mutex);
-        const auto it = Global().panels.find(swap);
-        if (it != Global().panels.end())
-        {
-            it->second->Fail(error);
-        }
-    }
-    catch (...)
-    {
-    }
-}
-void ReleaseSwapchain(IUnknown* swap) noexcept
-{
-    try
-    {
-        std::lock_guard lock(Global().mutex);
-        const auto it = Global().panels.find(reinterpret_cast<IDXGISwapChain*>(swap));
-        if (it != Global().panels.end())
-        {
-            auto panel = std::move(it->second);
-            Global().panels.erase(it);
-            panel->Close();
-        }
-    }
-    catch (...)
-    {
-    }
 }
 }

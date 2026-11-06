@@ -10,18 +10,19 @@
 
 namespace lite
 {
-// Where the INI lives: the game folder unless a writable profile copy wins.
-// Selection is read-only; directory creation and seeding run on the save worker.
+// Where the INI lives: ConfigDirectory override, else the game folder, else a
+// per-game profile copy after a failed save. Selection is read-only; directory
+// creation and seeding run on the save worker.
 struct ConfigSelection
 {
     std::wstring sourceFile, saveFile, fallbackFile;
-    bool userProfile{};
 };
 struct ConfigSaveStatus : ConfigSelection
 {
     DWORD error{}, fallbackCause{};
 };
-ConfigSelection SelectConfig(const std::wstring& pluginFile, const std::wstring& profileFile);
+ConfigSelection SelectConfig(const std::wstring& pluginFile, const std::wstring& profileFile,
+                             const std::wstring& overrideDirectory);
 class ConfigStorage
 {
   public:
@@ -42,7 +43,6 @@ class ConfigWriter
   public:
     using Write = std::function<bool(const std::wstring&, const std::wstring&, const std::wstring&)>;
     explicit ConfigWriter(Write write);
-    ~ConfigWriter();
     void Queue(const wchar_t* section, const wchar_t* key, const wchar_t* value);
     void Flush(); // Wake the writer, without waiting for disk.
   private:
@@ -58,7 +58,7 @@ class ConfigWriter
     std::map<Key, std::wstring> saved;
     std::chrono::steady_clock::time_point due{}, first{};
     Write write;
-    bool stopping{}, writing{};
+    bool writing{};
     std::thread worker;
     void Run();
 };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Lite shaders/dlssnr.hlsl guide debug modes, separated from the model pass.
 #include "frame.hpp"
+#include "gpu_util.hpp"
 #include "nr_shaders.hpp"
 #include <cmath>
 namespace lite::nr
@@ -104,19 +105,8 @@ Preview12::Preview12(ID3D12Device* d) : device(d)
 {
     D3D12_DESCRIPTOR_RANGE ranges[2]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0},
                                      {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 1}};
-    D3D12_ROOT_PARAMETER params[2]{};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[0].DescriptorTable = {2, ranges};
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants = {0, 0, 13};
-    D3D12_ROOT_SIGNATURE_DESC desc{2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
-    ComPtr<ID3DBlob> code, errors;
-    ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &code, &errors));
-    ThrowIfFailed(device->CreateRootSignature(0, code->GetBufferPointer(), code->GetBufferSize(), IID_PPV_ARGS(&root)));
-    D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
-    pso.pRootSignature = root.Get();
-    pso.CS = {litePreviewShader, sizeof(litePreviewShader)};
-    ThrowIfFailed(device->CreateComputePipelineState(&pso, IID_PPV_ARGS(&pipeline)));
+    ComputePipeline(device.Get(), ranges, 2, 12, litePreviewShader, sizeof(litePreviewShader),
+                    root.ReleaseAndGetAddressOf(), pipeline.ReleaseAndGetAddressOf());
     // One (SRV, UAV) pair per tile: a descriptor cannot be rewritten between the
     // dispatches of a list that is only executed later.
     D3D12_DESCRIPTOR_HEAP_DESC h{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
@@ -243,15 +233,12 @@ HRESULT Preview12::Tile(ID3D12GraphicsCommandList* list, const Frame12& frame, u
     struct Constants
     {
         unsigned mode, ox, oy, sw, sh, ow, oh, flags;
-        float sx, sy, gain, frameTime;
+        float sx, sy, gain;
         unsigned tileX;
     };
     const Constants c{input + 1u, g.originX[input], g.originY[input], sw, sh, ow, oh,
-                      (g.depthInverted ? 1u : 0u) | (g.flipDepth ? 2u : 0u) | (g.depthContrast ? 4u : 0u) |
-                          (frame.generatedMotion ? 8u : 0u),
-                      g.motionScaleX, g.motionScaleY, g.displayScale,
-                      std::isfinite(frame.frameTimeMs) && frame.frameTimeMs > 0 ? frame.frameTimeMs : 16.6667f,
-                      ow * input};
+                      (g.depthInverted ? 1u : 0u) | (g.flipDepth ? 2u : 0u) | (g.depthContrast ? 4u : 0u),
+                      g.motionScaleX, g.motionScaleY, g.displayScale, ow * input};
     auto* h = heap.Get();
     list->SetDescriptorHeaps(1, &h);
     list->SetPipelineState(pipeline.Get());
@@ -259,7 +246,7 @@ HRESULT Preview12::Tile(ID3D12GraphicsCommandList* list, const Frame12& frame, u
     auto table = heap->GetGPUDescriptorHandleForHeapStart();
     table.ptr += uint64_t(2 * input) * stride;
     list->SetComputeRootDescriptorTable(0, table);
-    list->SetComputeRoot32BitConstants(1, 13, &c, 0);
+    list->SetComputeRoot32BitConstants(1, 12, &c, 0);
     list->Dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
     return S_OK;
 }

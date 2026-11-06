@@ -4,9 +4,9 @@
 // CreateSwapChain* entries are detoured instead, because handing the game a foreign
 // IDXGIFactory7 makes its own DXGI calls fail (Alan Wake 2 device loss, 0x887A002B).
 #pragma once
-#include "ui/panel.hpp"
-
+#include "graphics.hpp"
 #include <atomic>
+#include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 namespace lite::capture
 {

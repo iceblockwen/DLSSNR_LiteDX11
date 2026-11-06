@@ -44,6 +44,8 @@ bool Usable();
 Detail DetailLevel() noexcept;
 // The log queue and its worker are kept although no call site exists: adding a
 // diagnostic means calling Log without rebuilding the plumbing.
+// Formats only when the current level is at least `level`, so Off builds no string.
+void LogFormat(Detail level, const wchar_t* format, ...) noexcept;
 void Log(const wchar_t* message) noexcept;
 void LogVerbose(const wchar_t* message) noexcept;
 }

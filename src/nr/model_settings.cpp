@@ -102,12 +102,10 @@ void SetModelSettings(const ModelSettings& input, bool persist)
     w.attack = Clamped(w.attack, 0, 16, 1);
     w.release = Clamped(w.release, 0, 16, .5f);
     w.every = std::clamp(w.every, 1u, 120u);
-    bool started{};
     {
         std::lock_guard lock(mutex);
         if (settings.enabled != s.enabled)
         {
-            started = s.enabled;
             if (s.enabled)
             {
                 Runtime().RetryFailedInitialization();

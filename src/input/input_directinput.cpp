@@ -127,7 +127,14 @@ HRESULT STDMETHODCALLTYPE OnState(Device* device, DWORD bytes, LPVOID data)
         auto* keys = static_cast<BYTE*>(data);
         auto& suppressed = devices[device].suppressed;
         // Clear completed physical releases even when this poll has no DOWN keys.
-        const auto pollBlocked = lite::PanelKeyboardPollMask();
+        // The mask costs a lock and 256 entries; only key releases the menu still
+        // owns need it, so an idle menu skips it and the per-key lookup below.
+        std::array<bool, 256> pollBlocked{};
+        const bool polled = !blocked && lite::PanelKeyboardOwnsReleases();
+        if (polled)
+        {
+            pollBlocked = lite::PanelKeyboardPollMask();
+        }
         for (DWORD scan = 0; scan < 256; ++scan)
         {
             if (!(keys[scan] & 0x80))
@@ -142,6 +149,10 @@ HRESULT STDMETHODCALLTYPE OnState(Device* device, DWORD bytes, LPVOID data)
             if (blocked || suppressed[scan])
             {
                 keys[scan] = 0;
+                continue;
+            }
+            if (!polled)
+            {
                 continue;
             }
             const int key = VirtualKey(scan);

@@ -66,6 +66,10 @@ struct WhiteReadback
     ComPtr<ID3D12Resource> exposure;
     bool hasExposure{};
     ComPtr<ID3D12DescriptorHeap> heap;
+    // Commit the last submitted ending state before replacing its ticket. A discarded
+    // recording cannot undo an older submission's COPY_SOURCE state.
+    std::shared_ptr<GpuTicket> ticket;
+    D3D12_RESOURCE_STATES committedState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     // Caller may consume only after the fence covering this recording is complete.
     HRESULT Consume(WhitePoint&, float* gameExposure = nullptr) const;
     void RetireInputs()
@@ -78,7 +82,7 @@ class WhiteMeter12
 {
   public:
     explicit WhiteMeter12(ID3D12Device*);
-    HRESULT Record(ID3D12GraphicsCommandList*, ID3D12Resource* uneditedSource, std::shared_ptr<WhiteReadback>&, ID3D12Resource* exposure = nullptr);
+    HRESULT Record(ID3D12GraphicsCommandList*, ID3D12Resource* uneditedSource, std::shared_ptr<WhiteReadback>&, ID3D12Resource* exposure, const std::shared_ptr<GpuTicket>& ticket);
 
   private:
     ComPtr<ID3D12Device> device;

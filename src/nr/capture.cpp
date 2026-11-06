@@ -7,6 +7,7 @@
 #include "pass.hpp"
 #include "../graphics.hpp"
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -24,7 +25,9 @@ struct Metadata : GuideMetadata
 struct Entry
 {
     HMODULE module{};
-    FARPROC create{}, evaluate{}, release{}, evaluateC{};
+    // The game's original NGX functions: create, evaluate, release, evaluate_C. Written
+    // once under mutex by ResolveNgx; the stubs read them lock-free on every call.
+    std::atomic<FARPROC> hot[4]{};
     std::map<void*, Metadata> features;
 };
 std::array<Entry, 8> entries;
@@ -104,22 +107,32 @@ unsigned __cdecl Create11(ID3D11DeviceContext* context, int feature, Parameters*
                           void** output)
 {
     using Fn = unsigned(__cdecl*)(ID3D11DeviceContext*, int, Parameters*, void**);
-    FARPROC address;
-    {
-        std::lock_guard lock(mutex);
-        address = entries[N].create;
-    }
+    const auto address = entries[N].hot[0].load(std::memory_order_acquire);
     if (!address)
     {
         return 0xBAD0000Bu;
     }
+    Metadata metadata;
+    bool described{};
+    if (feature == 1 && parameters)
+    {
+        try
+        {
+            // The original create may reuse these keys for optimal-settings queries.
+            // Preserve the caller's creation contract before entering that call.
+            metadata = Describe(parameters);
+            described = true;
+        }
+        catch (...)
+        {
+        }
+    }
     const auto result = reinterpret_cast<Fn>(address)(context, feature, parameters, output);
-    if (result == 1 && feature == 1 && parameters && output && *output)
+    if (result == 1 && described && output && *output)
     {
         try
         {
             std::lock_guard lock(mutex);
-            auto metadata = Describe(parameters);
             metadata.stream = ++streamGeneration;
             entries[N].features[*output] = metadata;
         }
@@ -137,11 +150,7 @@ unsigned __cdecl Evaluate11(ID3D11DeviceContext* context, void* handle,
 {
     using ParameterPointer = std::conditional_t<C, const Parameters*, Parameters*>;
     using Fn = unsigned(__cdecl*)(ID3D11DeviceContext*, void*, ParameterPointer, void*);
-    FARPROC address;
-    {
-        std::lock_guard lock(mutex);
-        address = C ? entries[N].evaluateC : entries[N].evaluate;
-    }
+    const auto address = entries[N].hot[C ? 3 : 1].load(std::memory_order_acquire);
     if (!address)
     {
         return 0xBAD0000Bu;
@@ -214,11 +223,10 @@ template <size_t N>
 unsigned __cdecl Release11(void* handle)
 {
     using Fn = unsigned(__cdecl*)(void*);
-    FARPROC address;
+    const auto address = entries[N].hot[2].load(std::memory_order_acquire);
     UINT64 stream{};
     {
         std::lock_guard lock(mutex);
-        address = entries[N].release;
         if (const auto it = entries[N].features.find(handle); it != entries[N].features.end())
         {
             stream = it->second.stream;
@@ -297,8 +305,7 @@ FARPROC ResolveNgx(HMODULE module, LPCSTR name, FARPROC original)
             }
             entry.module = module;
         }
-        FARPROC* originals[]{&entry.create, &entry.evaluate, &entry.release, &entry.evaluateC};
-        *originals[field] = original;
+        entry.hot[field].store(original, std::memory_order_release);
         const FARPROC replacements[]{thunks[n].create, thunks[n].evaluate, thunks[n].release, thunks[n].evaluateC};
         return replacements[field];
     }

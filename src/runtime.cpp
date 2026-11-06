@@ -12,7 +12,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <cstdarg>
 #include <cstdio>
+#include <cwchar>
 #include <share.h>
 
 #define LITE_WIDEN2(text) L##text
@@ -145,6 +147,19 @@ bool Usable()
 Detail DetailLevel() noexcept
 {
     return static_cast<Detail>(detail.load(std::memory_order_relaxed));
+}
+void LogFormat(Detail level, const wchar_t* format, ...) noexcept
+{
+    if (!format || DetailLevel() < level)
+    {
+        return;
+    }
+    wchar_t text[2600]{};
+    va_list args;
+    va_start(args, format);
+    _vsnwprintf_s(text, _countof(text), _TRUNCATE, format, args);
+    va_end(args);
+    Log(text);
 }
 void LogVerbose(const wchar_t* message) noexcept
 {

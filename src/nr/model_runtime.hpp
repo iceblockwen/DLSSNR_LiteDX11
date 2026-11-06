@@ -33,6 +33,32 @@ struct ModelStatus
 class ModelRuntime
 {
   public:
+    // One lock for a group of parameter writes: a recording sets a dozen values,
+    // and each individual setter would take the recursive lock again.
+    class Batch
+    {
+      public:
+        explicit Batch(ModelRuntime& owner)
+            : runtime(owner), guard(runtime.mutex)
+        {
+        }
+        void SetFloat(const char* key, float v)
+        {
+            runtime.writer.Float(key, v);
+        }
+        void SetUnsigned(const char* key, unsigned v)
+        {
+            runtime.writer.Unsigned(key, v);
+        }
+        void SetResource(const char* key, ID3D12Resource* v)
+        {
+            runtime.writer.Resource(key, v);
+        }
+
+      private:
+        ModelRuntime& runtime;
+        std::lock_guard<std::recursive_mutex> guard;
+    };
     explicit ModelRuntime(std::wstring directory);
     HRESULT Discover();
     HRESULT Initialize(ID3D12Device*);
@@ -50,9 +76,6 @@ class ModelRuntime
     unsigned Create(ID3D12GraphicsCommandList*, void**);
     unsigned Evaluate(ID3D12GraphicsCommandList*, void*);
     unsigned Release(void*);
-    void SetFloat(const char*, float);
-    void SetUnsigned(const char*, unsigned);
-    void SetResource(const char*, ID3D12Resource*);
     static HRESULT Adapter(ID3D12Device*, unsigned& vendor);
 
   private:

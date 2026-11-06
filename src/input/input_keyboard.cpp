@@ -14,22 +14,25 @@ struct Keys
 {
     std::array<bool, 256> legacyDown{}, legacyBlocked{}, rawDown{}, rawBlocked{}, pollRelease{};
 } keys;
-// Set while any pollRelease entry is pending. The game calls GetAsyncKeyState /
-// GetKeyState / GetKeyboardState continuously, so both poll queries read this
-// first and skip the mutex entirely when the menu owns nothing.
-std::atomic<bool> pollPending{};
-void RefreshPollPending()
+// pollRelease is written only under mutex, so a reader outside the lock can skip
+// the lock entirely while the menu owns no release at all. The count is a
+// conservative upper bound of owned entries: a stale value only costs a lock.
+std::atomic<unsigned> ownedReleases{};
+void Own(size_t code, bool value)
 {
-    bool any = false;
-    for (const bool pending : keys.pollRelease)
+    if (keys.pollRelease[code] == value)
     {
-        if (pending)
-        {
-            any = true;
-            break;
-        }
+        return;
     }
-    pollPending.store(any, std::memory_order_release);
+    keys.pollRelease[code] = value;
+    if (value)
+    {
+        ownedReleases.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        ownedReleases.fetch_sub(1, std::memory_order_relaxed);
+    }
 }
 bool IsDown(UINT message)
 {
@@ -77,8 +80,7 @@ bool PollHeldLocked(int key)
     lite::PanelInputScope bypass;
     if (!(GetAsyncKeyState(key) & 0x8000))
     {
-        keys.pollRelease[key] = false;
-        RefreshPollPending();
+        Own(key, false);
     }
     return keys.pollRelease[key];
 }
@@ -144,7 +146,7 @@ bool PanelKeyboardMessage(HWND window, UINT message, WPARAM key, LPARAM param)
         if (!(param & (1LL << 30)))
         {
             keys.legacyBlocked[code] = captured || key == VK_INSERT;
-            keys.pollRelease[code] = captured;
+            Own(code, captured);
         }
         keys.legacyDown[code] = true;
         result = captured || keys.legacyBlocked[code] || key == VK_INSERT;
@@ -152,9 +154,9 @@ bool PanelKeyboardMessage(HWND window, UINT message, WPARAM key, LPARAM param)
     else
     {
         result = keys.legacyBlocked[code] || key == VK_INSERT;
-        keys.legacyDown[code] = keys.legacyBlocked[code] = keys.pollRelease[code] = false;
+        keys.legacyDown[code] = keys.legacyBlocked[code] = false;
+        Own(code, false);
     }
-    RefreshPollPending();
     return result;
 }
 bool PanelKeyboardPollBlocked(int key)
@@ -171,7 +173,8 @@ bool PanelKeyboardPollBlocked(int key)
     {
         return true;
     }
-    if (!pollPending.load(std::memory_order_acquire))
+    // An idle menu owns nothing, so the common case never takes the lock.
+    if (!ownedReleases.load(std::memory_order_relaxed))
     {
         return false;
     }
@@ -202,7 +205,8 @@ std::array<bool, 256> PanelKeyboardPollMask()
         blocked.fill(true);
         return blocked;
     }
-    if (!pollPending.load(std::memory_order_acquire))
+    // Same short circuit as PanelKeyboardPollBlocked: no owned release, no mask.
+    if (!ownedReleases.load(std::memory_order_relaxed))
     {
         blocked[VK_INSERT] = true;
         return blocked;
@@ -236,10 +240,9 @@ void PanelKeyboardTransition(bool enabled)
     {
         if (!(GetAsyncKeyState(key) & 0x8000))
         {
-            keys.pollRelease[key] = false;
+            Own(key, false);
         }
     }
-    RefreshPollPending();
 }
 void PanelKeyboardFocusLost()
 {
@@ -251,10 +254,13 @@ void PanelKeyboardFocusLost()
     {
         if (!(GetAsyncKeyState(key) & 0x8000))
         {
-            keys.pollRelease[key] = false;
+            Own(key, false);
         }
     }
-    RefreshPollPending();
+}
+bool PanelKeyboardOwnsReleases()
+{
+    return ownedReleases.load(std::memory_order_relaxed) != 0;
 }
 bool PanelRawKeyboardMessage(const RAWKEYBOARD& key)
 {
@@ -300,7 +306,7 @@ void FilterPanelRawInput(RAWINPUT* input, unsigned bytes)
         if (!keys.rawDown[code])
         {
             keys.rawBlocked[code] = PanelGameInputBlocked() || code == VK_INSERT;
-            keys.pollRelease[code] = keys.rawBlocked[code];
+            Own(code, keys.rawBlocked[code]);
         }
         keys.rawDown[code] = true;
         blocked = PanelGameInputBlocked() || keys.rawBlocked[code];
@@ -308,7 +314,7 @@ void FilterPanelRawInput(RAWINPUT* input, unsigned bytes)
     else
     {
         keys.rawDown[code] = false;
-        keys.pollRelease[code] = false;
+        Own(code, false);
         // Keep this bit until the next MAKE: the same HRAWINPUT can be read by
         // both the engine's queue loop and WndProc, and must filter identically.
         blocked = keys.rawBlocked[code];
@@ -321,6 +327,5 @@ void FilterPanelRawInput(RAWINPUT* input, unsigned bytes)
         key.VKey = 0;
         key.Message = WM_KEYUP;
     }
-    RefreshPollPending();
 }
 }

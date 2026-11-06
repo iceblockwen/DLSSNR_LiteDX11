@@ -50,7 +50,6 @@ struct Input11
     ID3D11Resource* exposureResource{};
     bool reset{};
     InputOrigin origin = InputOrigin::Unknown;
-    float frameTimeMs = 16.6667f; // Presentation interval, used only by generated-MV visualization.
     UINT64 stream{};              // Unique NGX creation generation; zero is native fallback.
 };
 struct Frame12
@@ -67,7 +66,6 @@ struct Frame12
     ComPtr<ID3D12CommandQueue> orderedQueue;
     InputOrigin origin = InputOrigin::Unknown;
     bool generatedMotion{};
-    float frameTimeMs = 16.6667f;
     bool converted[3]{}; // actual bridge format conversion, not an unchanged copy
 };
 DXGI_FORMAT ViewFormat(DXGI_FORMAT format, bool depth = false);
@@ -82,24 +80,44 @@ void Transition(ID3D12GraphicsCommandList*, ID3D12Resource*, D3D12_RESOURCE_STAT
 class BarrierBatch
 {
   public:
+    BarrierBatch() = default;
+    explicit BarrierBatch(ID3D12GraphicsCommandList* l)
+        : list(l)
+    {
+    }
+    // A batch that is a member of a longer-lived record binds its list once.
+    void Bind(ID3D12GraphicsCommandList* l)
+    {
+        list = l;
+    }
     void Add(ID3D12Resource* r, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
     {
-        if (!r || before == after || count == capacity)
+        if (!r || before == after)
         {
             return;
+        }
+        if (count == capacity)
+        {
+            // A full batch flushes and keeps collecting; dropping the transition
+            // would leave the resource in the wrong state.
+            if (!list)
+            {
+                return;
+            }
+            Flush(list);
         }
         auto& b = barriers[count++];
         b = {};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
     }
-    void Flush(ID3D12GraphicsCommandList* list)
+    void Flush(ID3D12GraphicsCommandList* target)
     {
         if (!count)
         {
             return;
         }
-        list->ResourceBarrier(count, barriers);
+        target->ResourceBarrier(count, barriers);
         count = 0;
     }
     // Drop collected transitions that will never reach a command list. Only valid
@@ -110,6 +128,7 @@ class BarrierBatch
     }
 
   private:
+    ID3D12GraphicsCommandList* list{};
     // A dense-flow stage transitions at most seven inputs and two outputs.
     static constexpr UINT capacity = 16;
     D3D12_RESOURCE_BARRIER barriers[capacity]{};

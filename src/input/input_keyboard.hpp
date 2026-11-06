@@ -10,6 +10,9 @@ bool PanelKeyboardMessage(HWND, UINT, WPARAM, LPARAM);
 bool PanelKeyboardQueue(HWND, UINT, WPARAM, LPARAM);
 bool PanelKeyboardPollBlocked(int key);
 std::array<bool, 256> PanelKeyboardPollMask();
+// Lock-free: true while the menu still owns at least one key release. Callers use
+// it to skip the mask entirely when the panel has never captured a press.
+bool PanelKeyboardOwnsReleases();
 void PanelKeyboardTransition(bool enabled);
 void PanelKeyboardFocusLost();
 void FilterPanelRawInput(RAWINPUT* input, unsigned bytes);

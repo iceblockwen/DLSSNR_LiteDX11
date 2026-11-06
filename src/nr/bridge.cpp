@@ -554,7 +554,6 @@ struct Bridge11::Impl
         slot->frame.guides = input.guides;
         slot->frame.origin = input.origin;
         slot->frame.generatedMotion = false;
-        slot->frame.frameTimeMs = input.frameTimeMs;
         for (unsigned n = 0; n < 3; ++n)
         {
             slot->frame.converted[n] = slot->twins[n].converted;

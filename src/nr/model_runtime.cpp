@@ -283,21 +283,6 @@ unsigned ModelRuntime::Release(void* feature)
     std::lock_guard lock(mutex);
     return release ? unsigned(LiteNrRelease(release, feature)) : 0xBAD0000Bu;
 }
-void ModelRuntime::SetFloat(const char* key, float v)
-{
-    std::lock_guard lock(mutex);
-    writer.Float(key, v);
-}
-void ModelRuntime::SetUnsigned(const char* key, unsigned v)
-{
-    std::lock_guard lock(mutex);
-    writer.Unsigned(key, v);
-}
-void ModelRuntime::SetResource(const char* key, ID3D12Resource* v)
-{
-    std::lock_guard lock(mutex);
-    writer.Resource(key, v);
-}
 ModelRuntime& Runtime()
 {
     static auto* r = new ModelRuntime(std::filesystem::path(lite::Snapshot().pluginPath).parent_path().wstring());

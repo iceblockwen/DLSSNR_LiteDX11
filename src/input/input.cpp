@@ -142,6 +142,38 @@ struct NativeCursor
     bool held{}, failed{};
 } native;
 bool nativeHooks{};
+struct CaptureRestore
+{
+    HWND active{}, prior{};
+};
+thread_local CaptureRestore captureRestore;
+// Capture changes synchronously enter the window procedure. Never do that while
+// holding nativeMutex: the render thread takes GraphicsMutex then nativeMutex.
+class NativeLock
+{
+    std::unique_lock<std::mutex> lock{nativeMutex};
+
+  public:
+    ~NativeLock()
+    {
+        const auto restore = captureRestore;
+        captureRestore = {};
+        lock.unlock();
+        if (!restore.active)
+        {
+            return;
+        }
+        if (GetCapture() == restore.active && restore.prior != restore.active)
+        {
+            ReleaseCapture();
+        }
+        else if (restore.prior == restore.active && GetCapture() != restore.active &&
+                 GetForegroundWindow() == restore.active)
+        {
+            SetCapture(restore.active);
+        }
+    }
+};
 UINT CursorWake()
 {
     static const UINT message = RegisterWindowMessageW(L"Lite.NativeCursor.Sync.1");
@@ -166,14 +198,7 @@ void RestoreNativeLocked()
         }
     }
     realCursor(native.gameCursor);
-    if (GetCapture() == native.active && native.priorCapture != native.active)
-    {
-        ReleaseCapture();
-    }
-    else if (native.priorCapture == native.active && GetCapture() != native.active && GetForegroundWindow() == native.active)
-    {
-        SetCapture(native.active);
-    }
+    captureRestore = {native.active, native.priorCapture};
     native.held = false;
 }
 void SyncNativeLocked()
@@ -267,7 +292,7 @@ LRESULT CALLBACK NativeMessages(int code, WPARAM wparam, LPARAM lparam)
     if (code == HC_ACTION && wparam == PM_REMOVE)
     {
         {
-            std::lock_guard lock(nativeMutex);
+            NativeLock lock;
             SyncNativeLocked();
         }
         auto* message = reinterpret_cast<MSG*>(lparam);
@@ -280,7 +305,7 @@ LRESULT CALLBACK NativeMessages(int code, WPARAM wparam, LPARAM lparam)
 }
 void CaptureNative(HWND window)
 {
-    std::lock_guard lock(nativeMutex);
+    NativeLock lock;
     native.requested = window;
     if (window && !native.thread)
     {
@@ -303,7 +328,7 @@ void CaptureNative(HWND window)
 }
 int WINAPI OnShow(BOOL show)
 {
-    std::lock_guard lock(nativeMutex);
+    NativeLock lock;
     SyncNativeLocked();
     if (native.held && native.thread == GetCurrentThreadId() && !internal)
     {
@@ -318,7 +343,7 @@ int WINAPI OnShow(BOOL show)
 }
 HCURSOR WINAPI OnCursor(HCURSOR cursor)
 {
-    std::lock_guard lock(nativeMutex);
+    NativeLock lock;
     SyncNativeLocked();
     if (native.requested && internal && native.thread)
     {
@@ -380,13 +405,9 @@ BOOL WINAPI OnGetPos(LPPOINT point)
         *point = askedCursor;
         return TRUE;
     }
-    const BOOL result = realGetPos(point);
-    if (result && point && !owner.load())
-    {
-        std::lock_guard lock(cursorMutex);
-        askedCursor = *point;
-    }
-    return result;
+    // CapturePanelInput() re-reads the physical position when it starts, so a
+    // position observed while the panel is closed is never worth a lock.
+    return realGetPos(point);
 }
 SHORT WINAPI OnAsync(int key)
 {
@@ -604,7 +625,7 @@ bool PanelCursorMessage(UINT message)
     {
         return false;
     }
-    std::lock_guard lock(nativeMutex);
+    NativeLock lock;
     SyncNativeLocked();
     return true;
 }

@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
-#include <chrono>
 namespace lite::nr
 {
 namespace
@@ -28,8 +27,6 @@ struct NativeCaptureState
     std::unique_ptr<PassExecutor12> model;
     std::unique_ptr<DenseFlow12> modelFlow;
     DenseFlowSettings modelFlowOptions;
-    std::chrono::steady_clock::time_point presentTime{};
-    float frameTimeMs = 16.6667f;
     UINT64 revision{};
     UINT64 modelStream{};
     InputOrigin modelOrigin = InputOrigin::Unknown;
@@ -659,12 +656,6 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
     try
     {
         auto& native = Global().native[context];
-        const auto presentTime = std::chrono::steady_clock::now();
-        if (native.presentTime.time_since_epoch().count())
-        {
-            native.frameTimeMs = std::clamp(std::chrono::duration<float, std::milli>(presentTime - native.presentTime).count(), .1f, 1000.f);
-        }
-        native.presentTime = presentTime;
         if (!native.device)
         {
             context->GetDevice(&native.device);
@@ -732,7 +723,6 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
         // anyway, so a private intermediate copy here only cost one more full-frame pass.
         Input11 input{{buffer.Get(), found.image.Get(), nullptr}, {}};
         input.origin = InputOrigin::NativeCapture;
-        input.frameTimeMs = native.frameTimeMs;
         input.guides.depthInverted = found.inverted;
         input.guides.flipDepth = DepthFlip();
         input.guides.displayScale = DisplayScale();

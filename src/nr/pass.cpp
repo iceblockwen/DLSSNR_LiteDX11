@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "pass.hpp"
 #include "model_runtime.hpp"
+#include "gpu_util.hpp"
 #include "../graphics.hpp"
 #include "nr_shaders.hpp"
 #include <mutex>
@@ -25,7 +26,7 @@ bool Plain(ID3D12Resource* r)
            d.MipLevels == 1 && d.SampleDesc.Count == 1 && d.Width && d.Height;
 }
 // Settings arrive validated by SetModelSettings; only game-provided values are bounded here.
-void Tuning(ModelRuntime& backend, const PassSettings& s)
+void Tuning(ModelRuntime::Batch& backend, const PassSettings& s)
 {
     backend.SetUnsigned("DLSSNR.Hint.Render.Preset", s.preset);
     backend.SetUnsigned("DLSSNR.Style", s.style);
@@ -59,7 +60,7 @@ constexpr RegionKeys kRegionKeys[]{
     {"DLSSNR.DepthSubrectBaseX", "DLSSNR.DepthSubrectBaseY", "DLSSNR.DepthSubrectWidth", "DLSSNR.DepthSubrectHeight"},
     {"DLSSNR.MVecSubrectBaseX", "DLSSNR.MVecSubrectBaseY", "DLSSNR.MVecSubrectWidth", "DLSSNR.MVecSubrectHeight"},
 };
-void Region(ModelRuntime& backend, RegionKind kind, unsigned w, unsigned h, unsigned x = 0, unsigned y = 0)
+void Region(ModelRuntime::Batch& backend, RegionKind kind, unsigned w, unsigned h, unsigned x = 0, unsigned y = 0)
 {
     const auto& keys = kRegionKeys[unsigned(kind)];
     backend.SetUnsigned(keys.x, x);
@@ -175,11 +176,13 @@ struct Recording
     std::shared_ptr<Layer> layer; // retain this recording's feature across tuning changes
     Frame12 input;
     ComPtr<ID3D12Resource> exposure;
+    ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12PipelineState> pipeline;
     ComPtr<ID3D12DescriptorHeap> heap;
     std::shared_ptr<WhiteReadback> meter;
     std::shared_ptr<TimingResources> timing;
     unsigned timedLayers{};
-    bool evaluated{};
+    bool evaluated{}, createdFeature{};
     UINT64 whiteEpoch{};
     bool sceneLinear{}, hasExposure{}, modelMeasurement{};
     unsigned liveExposure{}; // 0 off, 1 pre/exposure, 2 exposure/pre
@@ -336,27 +339,9 @@ struct PassExecutor12::Impl
         }
         D3D12_DESCRIPTOR_RANGE ranges[2]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0},
                                          {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 4}};
-        D3D12_ROOT_PARAMETER p[2]{};
-        p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        p[0].DescriptorTable = {2, ranges};
-        p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        p[1].Constants = {0, 0, 17};
-        D3D12_STATIC_SAMPLER_DESC sampler{};
-        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.MaxLOD = D3D12_FLOAT32_MAX;
-        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        D3D12_ROOT_SIGNATURE_DESC desc{2, p, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE};
-        ComPtr<ID3DBlob> code, error;
-        ThrowIfFailed(
-            D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &code, &error));
-        ThrowIfFailed(device->CreateRootSignature(0, code->GetBufferPointer(),
-                                                  code->GetBufferSize(), IID_PPV_ARGS(&root)));
-        D3D12_COMPUTE_PIPELINE_STATE_DESC ps{};
-        ps.pRootSignature = root.Get();
-        ps.CS = {liteColorShader, sizeof(liteColorShader)};
-        ThrowIfFailed(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&pipeline)));
+        // The shader only uses Load(), so the root signature needs no sampler.
+        ComputePipeline(device.Get(), ranges, 2, 16, liteColorShader, sizeof(liteColorShader),
+                        root.ReleaseAndGetAddressOf(), pipeline.ReleaseAndGetAddressOf());
     }
     HRESULT Record(ID3D12GraphicsCommandList* list, const Frame12& frame, const Exposure& exposure,
                    const PassSettings& settings, bool reset,
@@ -381,7 +366,6 @@ struct PassExecutor12::Impl
             status.frameSkipped = true;
             status.failedPass = 0;
             status.ngxResult = 0;
-            RestartHistory();
             return hr;
         };
         if (!list || !frame.ticket)
@@ -508,7 +492,7 @@ struct PassExecutor12::Impl
         status.exposureScalePresent = exposure.exposurePresent;
         auto canFollow = [&]
         {
-            if (!previous->evaluated ||
+            if (!(previous->evaluated || previous->createdFeature) ||
                 !previous->input.ticket->SubmittedOn(frame.orderedQueue.Get()) ||
                 !context || context->failed)
             {
@@ -520,7 +504,7 @@ struct PassExecutor12::Impl
                 return false;
             }
             // Creation and guide reallocation still require retirement.
-            if (!context->layer || context->layer->failed)
+            if (!context->layer || !context->layer->feature || context->layer->failed)
             {
                 return false;
             }
@@ -550,7 +534,9 @@ struct PassExecutor12::Impl
                 status.timingValid = false;
                 return refuse(E_ABORT, "NR recording discarded; history rebuild on next frame");
             }
-            if (!previous->input.ticket->Complete() && !canFollow())
+            const bool tuningRebuild = context && !SameTuning(context->tuning, settings) &&
+                                       previous->input.ticket->SubmittedOn(frame.orderedQueue.Get());
+            if (!previous->input.ticket->Complete() && !canFollow() && !tuningRebuild)
             {
                 RestartHistory();
                 status.ready = false;
@@ -755,15 +741,19 @@ struct PassExecutor12::Impl
         keep = recording; // registered before the first model/GPU operation
         if (!ctx->layer)
         {
-            // Creation-time configuration: the model reads these when the feature is
-            // created, and every tuning change drops the layer before coming back here.
-            backend.SetUnsigned("DLSSNR.Enabled", 1u);
-            backend.SetUnsigned("DLSSNR.Width", ctx->w);
-            backend.SetUnsigned("DLSSNR.Height", ctx->h);
-            backend.SetUnsigned("CreationNodeMask", 1u);
-            backend.SetUnsigned("VisibilityNodeMask", 1u);
-            Tuning(backend, settings);
-            backend.SetResource("DLSSNR.ControlMask", nullptr);
+            {
+                // Creation-time configuration: the model reads these when the feature is
+                // created, and every tuning change drops the layer before coming back here.
+                // One lock for the whole group; Create below takes its own.
+                ModelRuntime::Batch params(backend);
+                params.SetUnsigned("DLSSNR.Enabled", 1u);
+                params.SetUnsigned("DLSSNR.Width", ctx->w);
+                params.SetUnsigned("DLSSNR.Height", ctx->h);
+                params.SetUnsigned("CreationNodeMask", 1u);
+                params.SetUnsigned("VisibilityNodeMask", 1u);
+                Tuning(params, settings);
+                params.SetResource("DLSSNR.ControlMask", nullptr);
+            }
             // Validate resources before letting the model record initialization.
             Shaders();
             auto layer = std::make_shared<Layer>();
@@ -786,10 +776,13 @@ struct PassExecutor12::Impl
                 status.error = E_FAIL;
                 return E_FAIL;
             }
+            recording->createdFeature = true;
             status.error = S_OK;
             return S_OK; // one creation per submitted frame; evaluate nothing on it
         }
         recording->layer = ctx->layer;
+        recording->root = root;
+        recording->pipeline = pipeline;
         if (!ctx->answer)
         {
             ctx->answer = Texture(device.Get(), ctx->w, ctx->h, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -992,7 +985,8 @@ struct PassExecutor12::Impl
                 {
                     meter = std::make_unique<WhiteMeter12>(device.Get());
                 }
-                hr = meter->Record(list, result, recording->meter, recording->exposure.Get());
+                hr = meter->Record(list, result, recording->meter, recording->exposure.Get(),
+                                   frame.ticket);
             }
             catch (HRESULT error)
             {
@@ -1013,29 +1007,33 @@ struct PassExecutor12::Impl
         bool readable{};
         ID3D12Resource* input = colour;
         ID3D12Resource* final{};
-        BarrierBatch entry;
+        BarrierBatch entry(list);
         if (status.readyPasses)
         {
             auto& layer = ctx->layer;
             auto* answer = ctx->answer.Get();
-            // Estimator distrust is a Debug guide, not the NR application mask.
-            backend.SetResource("DLSSNR.Color", input);
-            backend.SetResource("DLSSNR.Output", answer);
-            backend.SetUnsigned("DLSSNR.Reset", layer->first ? 1u : 0u);
-            backend.SetResource("DLSSNR.Depth", guides[0]);
-            backend.SetResource("DLSSNR.MVec", guides[1]);
-            backend.SetUnsigned("DLSSNR.DepthInverted", frame.guides.depthInverted ? 1u : 0u);
-            backend.SetFloat("DLSSNR.MVecScaleX", frame.guides.motionScaleX);
-            backend.SetFloat("DLSSNR.MVecScaleY", frame.guides.motionScaleY);
-            Region(backend, RegionKind::Color, ctx->w, ctx->h);
-            Region(backend, RegionKind::Output, ctx->w, ctx->h);
-            for (unsigned g = 1; g < 3; ++g)
             {
-                auto d = frame.resources[g]->GetDesc();
-                Region(backend, g == 1 ? RegionKind::Depth : RegionKind::MVec,
-                       frame.guides.width[g] ? frame.guides.width[g] : unsigned(d.Width),
-                       frame.guides.height[g] ? frame.guides.height[g] : d.Height,
-                       frame.guides.originX[g], frame.guides.originY[g]);
+                // One lock for the whole parameter group; Evaluate below takes its own.
+                ModelRuntime::Batch params(backend);
+                // Estimator distrust is a Debug guide, not the NR application mask.
+                params.SetResource("DLSSNR.Color", input);
+                params.SetResource("DLSSNR.Output", answer);
+                params.SetUnsigned("DLSSNR.Reset", layer->first ? 1u : 0u);
+                params.SetResource("DLSSNR.Depth", guides[0]);
+                params.SetResource("DLSSNR.MVec", guides[1]);
+                params.SetUnsigned("DLSSNR.DepthInverted", frame.guides.depthInverted ? 1u : 0u);
+                params.SetFloat("DLSSNR.MVecScaleX", frame.guides.motionScaleX);
+                params.SetFloat("DLSSNR.MVecScaleY", frame.guides.motionScaleY);
+                Region(params, RegionKind::Color, ctx->w, ctx->h);
+                Region(params, RegionKind::Output, ctx->w, ctx->h);
+                for (unsigned g = 1; g < 3; ++g)
+                {
+                    auto d = frame.resources[g]->GetDesc();
+                    Region(params, g == 1 ? RegionKind::Depth : RegionKind::MVec,
+                           frame.guides.width[g] ? frame.guides.width[g] : unsigned(d.Width),
+                           frame.guides.height[g] ? frame.guides.height[g] : d.Height,
+                           frame.guides.originX[g], frame.guides.originY[g]);
+                }
             }
             layer->last = frame.ticket;
             previous = recording; // retain even partially recorded model work
@@ -1099,7 +1097,7 @@ struct PassExecutor12::Impl
             status.error = E_FAIL;
             status.reason = "First NR layer evaluation failed; original frame preserved";
         }
-        BarrierBatch tail;
+        BarrierBatch tail(list);
         if (readable)
         {
             tail.Add(ctx->answer.Get(), SRV, UAV);
