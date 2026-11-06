@@ -5,29 +5,9 @@
 #include <string>
 namespace lite::nr
 {
-// Runtime backend owns NGX capabilities and device validation.
-class FeatureBackend
-{
-  public:
-    virtual ~FeatureBackend() = default;
-    virtual HRESULT Initialize(ID3D12Device*) = 0;
-    virtual Parameters* Capability() const = 0;
-    virtual unsigned Create(ID3D12GraphicsCommandList*, void**) = 0;
-    virtual unsigned Evaluate(ID3D12GraphicsCommandList*, void*) = 0;
-    virtual unsigned Release(void*) = 0;
-    virtual void SetFloat(const char* key, float v)
-    {
-        Capability()->Set(key, v);
-    }
-    virtual void SetUnsigned(const char* key, unsigned v)
-    {
-        Capability()->Set(key, v);
-    }
-    virtual void SetResource(const char* key, ID3D12Resource* v)
-    {
-        Capability()->Set(key, reinterpret_cast<unsigned long long>(v));
-    }
-};
+// The pass records into the model runtime; there is exactly one implementation,
+// so the interface is a plain reference instead of a virtual base.
+class ModelRuntime;
 struct PassSettings
 {
     WhiteSettings white;
@@ -71,7 +51,7 @@ struct PassStatus
 class PassExecutor12
 {
   public:
-    PassExecutor12(ID3D12Device*, FeatureBackend&);
+    PassExecutor12(ID3D12Device*, ModelRuntime&);
     ~PassExecutor12();
     HRESULT Record(ID3D12GraphicsCommandList*, const Frame12&, const Exposure&, const PassSettings&,
                    bool reset, std::shared_ptr<void>& keepAlive, ID3D12Resource*& result);

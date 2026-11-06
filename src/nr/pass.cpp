@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "pass.hpp"
+#include "model_runtime.hpp"
 #include "../graphics.hpp"
 #include "nr_shaders.hpp"
 #include <mutex>
@@ -22,12 +23,12 @@ bool Plain(ID3D12Resource* r)
     return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.DepthOrArraySize == 1 &&
            d.MipLevels == 1 && d.SampleDesc.Count == 1 && d.Width && d.Height;
 }
-void Resource(FeatureBackend& backend, const char* key, ID3D12Resource* r)
+void Resource(ModelRuntime& backend, const char* key, ID3D12Resource* r)
 {
     backend.SetResource(key, r);
 }
 // Settings arrive validated by SetModelSettings; only game-provided values are bounded here.
-void Tuning(FeatureBackend& backend, const PassSettings& s)
+void Tuning(ModelRuntime& backend, const PassSettings& s)
 {
     backend.SetUnsigned("DLSSNR.Hint.Render.Preset", s.preset);
     backend.SetUnsigned("DLSSNR.Style", s.style);
@@ -38,7 +39,7 @@ void Tuning(FeatureBackend& backend, const PassSettings& s)
     backend.SetUnsigned("DLSSNR.UseAutoMask", s.autoMask ? 1u : 0u);
     backend.SetUnsigned("DLSSNR.UICorrection", s.uiCorrection ? 1u : 0u);
 }
-void Region(FeatureBackend& backend, const char* prefix, unsigned w, unsigned h, unsigned x = 0,
+void Region(ModelRuntime& backend, const char* prefix, unsigned w, unsigned h, unsigned x = 0,
             unsigned y = 0)
 {
     std::string k = "DLSSNR.";
@@ -68,12 +69,12 @@ ComPtr<ID3D12Resource> Texture(ID3D12Device* d, unsigned w, unsigned h, DXGI_FOR
 struct ParkedFeature
 {
     void* feature{};
-    FeatureBackend* backend{};
+    ModelRuntime* backend{};
     std::shared_ptr<GpuTicket> ticket;
 };
 std::mutex parkedMutex;
 std::vector<ParkedFeature> parkedFeatures;
-void ParkFeature(void* feature, FeatureBackend* backend, const std::shared_ptr<GpuTicket>& ticket)
+void ParkFeature(void* feature, ModelRuntime* backend, const std::shared_ptr<GpuTicket>& ticket)
 {
     if (!feature || !backend)
     {
@@ -109,7 +110,7 @@ void DrainParkedFeatures()
 }
 struct Layer
 {
-    FeatureBackend* backend{};
+    ModelRuntime* backend{};
     void* feature{};
     std::shared_ptr<GpuTicket> last;
     bool first = true, failed{};
@@ -239,7 +240,7 @@ void RetireModelFeatures()
 struct PassExecutor12::Impl
 {
     ComPtr<ID3D12Device> device;
-    FeatureBackend& backend;
+    ModelRuntime& backend;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
     std::unique_ptr<WhiteMeter12> meter;
@@ -259,8 +260,11 @@ struct PassExecutor12::Impl
     unsigned guideWidth[2]{}, guideHeight[2]{};
     Guides previousGuides;
     bool haveGuides{};
-    explicit Impl(ID3D12Device* d, FeatureBackend& b) : device(d), backend(b)
+    // Constant per device; queried once instead of on every descriptor write.
+    UINT viewStride{};
+    explicit Impl(ID3D12Device* d, ModelRuntime& b) : device(d), backend(b)
     {
+        viewStride = d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
     std::shared_ptr<TimingResources> AcquireTiming()
     {
@@ -766,7 +770,7 @@ struct PassExecutor12::Impl
         auto cpu = [&](unsigned n)
         {
             auto h = recording->heap->GetCPUDescriptorHandleForHeapStart();
-            h.ptr += SIZE_T(n) * device->GetDescriptorHandleIncrementSize(hd.Type);
+            h.ptr += SIZE_T(n) * viewStride;
             return h;
         };
         auto srv = [&](unsigned n, ID3D12Resource* r, bool depth = false)
@@ -852,7 +856,7 @@ struct PassExecutor12::Impl
             list->SetComputeRootSignature(root.Get());
             list->SetPipelineState(pipeline.Get());
             auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
-            gpu.ptr += UINT64(offset) * device->GetDescriptorHandleIncrementSize(hd.Type);
+            gpu.ptr += UINT64(offset) * viewStride;
             list->SetComputeRootDescriptorTable(0, gpu);
             list->SetComputeRoot32BitConstants(1, 16, &c, 0);
             list->Dispatch((ctx->w + 7) / 8, (ctx->h + 7) / 8, 1);
@@ -888,7 +892,7 @@ struct PassExecutor12::Impl
             list->SetComputeRootSignature(root.Get());
             list->SetPipelineState(pipeline.Get());
             auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
-            gpu.ptr += UINT64(table) * device->GetDescriptorHandleIncrementSize(hd.Type);
+            gpu.ptr += UINT64(table) * viewStride;
             list->SetComputeRootDescriptorTable(0, gpu);
             auto guideConstants = c;
             guideConstants.mode = 2;
@@ -1046,7 +1050,7 @@ struct PassExecutor12::Impl
         return S_OK; // partial GPU work must still be submitted on failure
     }
 };
-PassExecutor12::PassExecutor12(ID3D12Device* d, FeatureBackend& b)
+PassExecutor12::PassExecutor12(ID3D12Device* d, ModelRuntime& b)
     : impl(std::make_unique<Impl>(d, b))
 {
 }

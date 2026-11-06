@@ -31,12 +31,12 @@ struct ModelStatus
     wchar_t coreVersion[64]{}, modelVersion[64]{};
 };
 // Lite ngx.cpp registry/module discovery and renderer.cpp core/model ABI.
-class ModelRuntime : public FeatureBackend
+class ModelRuntime
 {
   public:
     explicit ModelRuntime(std::wstring directory);
     HRESULT Discover();
-    HRESULT Initialize(ID3D12Device*) override;
+    HRESULT Initialize(ID3D12Device*);
     ModelStatus Snapshot() const;
     bool Available() const noexcept
     {
@@ -44,16 +44,16 @@ class ModelRuntime : public FeatureBackend
     }
     void RetryFailedInitialization();
     bool OwnsDevice(ID3D12Device*) const;
-    Parameters* Capability() const override
+    Parameters* Capability() const
     {
         return parameters;
     }
-    unsigned Create(ID3D12GraphicsCommandList*, void**) override;
-    unsigned Evaluate(ID3D12GraphicsCommandList*, void*) override;
-    unsigned Release(void*) override;
-    void SetFloat(const char*, float) override;
-    void SetUnsigned(const char*, unsigned) override;
-    void SetResource(const char*, ID3D12Resource*) override;
+    unsigned Create(ID3D12GraphicsCommandList*, void**);
+    unsigned Evaluate(ID3D12GraphicsCommandList*, void*);
+    unsigned Release(void*);
+    void SetFloat(const char*, float);
+    void SetUnsigned(const char*, unsigned);
+    void SetResource(const char*, ID3D12Resource*);
     static HRESULT Adapter(ID3D12Device*, unsigned& vendor, std::wstring& name);
 
   private:
