@@ -85,6 +85,14 @@ ComPtr<ID3D12Resource> Texture(ID3D12Device* d, unsigned w, unsigned h, DXGI_FOR
                                              IID_PPV_ARGS(&r)));
     return r;
 }
+// The re-typed motion-vector twin keeps the game's own precision: turning a 32-bit vector pair
+// into half would quantise it, and Opt re-types within the same family for the same reason.
+DXGI_FORMAT MotionFormat(DXGI_FORMAT f)
+{
+    return f == DXGI_FORMAT_R32G32_TYPELESS || f == DXGI_FORMAT_R32G32_FLOAT
+               ? DXGI_FORMAT_R32G32_FLOAT
+               : DXGI_FORMAT_R16G16_FLOAT;
+}
 struct ParkedFeature
 {
     void* feature{};
@@ -920,13 +928,14 @@ struct PassExecutor12::Impl
         for (unsigned n = 0; n < 2; ++n)
         {
             auto d = guides[n]->GetDesc();
-            const auto expected = n ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT;
+            const auto expected = n ? MotionFormat(d.Format) : DXGI_FORMAT_R32_FLOAT;
             if (d.Format == expected && !(n == 0 && frame.guides.flipDepth))
             {
                 continue;
             }
             auto& twin = ctx->guides[n];
-            if (!twin || twin->GetDesc().Width != d.Width || twin->GetDesc().Height != d.Height)
+            if (!twin || twin->GetDesc().Width != d.Width || twin->GetDesc().Height != d.Height ||
+                twin->GetDesc().Format != expected)
             {
                 twin = Texture(device.Get(), unsigned(d.Width), d.Height, expected);
             }
