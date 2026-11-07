@@ -11,7 +11,6 @@ cbuffer Settings : register(b0) {
  if(id.x>=ow || id.y>=oh) return;
  uint2 at = uint2((float2(id.xy)+0.5)*float2(sw,sh)/float2(ow,oh));
  at=min(at,uint2(sw-1,sh-1));
- if(mode==2 && (flags&2)) at.y=sh-1-at.y;
  float4 v=source.Load(int3(at+uint2(ox,oy),0));
  float4 result;
  if(mode==2) {

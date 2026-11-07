@@ -343,7 +343,7 @@ struct PassExecutor12::Impl
         D3D12_DESCRIPTOR_RANGE ranges[2]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0},
                                          {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 4}};
         // The shader only uses Load(), so the root signature needs no sampler.
-        ComputePipeline(device.Get(), ranges, 2, 16, liteColorShader, sizeof(liteColorShader),
+        ComputePipeline(device.Get(), ranges, 2, 12, liteColorShader, sizeof(liteColorShader),
                         root.ReleaseAndGetAddressOf(), pipeline.ReleaseAndGetAddressOf());
     }
     HRESULT Record(ID3D12GraphicsCommandList* list, const Frame12& frame, const Exposure& exposure,
@@ -832,7 +832,7 @@ struct PassExecutor12::Impl
         {
             unsigned mode, w, h, display;
             float white, preMul;
-            unsigned live, guideX, guideY, guideW, guideH;
+            unsigned live;
             float differenceGain;
             unsigned composed;
             float exponent, trim;
@@ -877,7 +877,7 @@ struct PassExecutor12::Impl
             auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
             gpu.ptr += UINT64(offset) * viewStride;
             list->SetComputeRootDescriptorTable(0, gpu);
-            list->SetComputeRoot32BitConstants(1, 16, &c, 0);
+            list->SetComputeRoot32BitConstants(1, 12, &c, 0);
             list->Dispatch((ctx->w + 7) / 8, (ctx->h + 7) / 8, 1);
         };
         ID3D12Resource* guides[2]{frame.resources[1].Get(), frame.resources[2].Get()};
@@ -885,7 +885,7 @@ struct PassExecutor12::Impl
         {
             auto d = guides[n]->GetDesc();
             const auto expected = n ? MotionFormat(d.Format) : DXGI_FORMAT_R32_FLOAT;
-            if (d.Format == expected && !(n == 0 && frame.guides.flipDepth))
+            if (d.Format == expected)
             {
                 continue;
             }
@@ -918,14 +918,7 @@ struct PassExecutor12::Impl
             guideConstants.mode = 2;
             guideConstants.w = unsigned(d.Width);
             guideConstants.h = d.Height;
-            guideConstants.display = n == 0 && frame.guides.flipDepth;
-            guideConstants.guideX = frame.guides.originX[n + 1];
-            guideConstants.guideY = frame.guides.originY[n + 1];
-            guideConstants.guideW =
-                frame.guides.width[n + 1] ? frame.guides.width[n + 1] : unsigned(d.Width);
-            guideConstants.guideH =
-                frame.guides.height[n + 1] ? frame.guides.height[n + 1] : d.Height;
-            list->SetComputeRoot32BitConstants(1, 16, &guideConstants, 0);
+            list->SetComputeRoot32BitConstants(1, 12, &guideConstants, 0);
             list->Dispatch((guideConstants.w + 7) / 8, (guideConstants.h + 7) / 8, 1);
             Transition(list, twin.Get(), UAV, SRV);
             guides[n] = twin.Get();

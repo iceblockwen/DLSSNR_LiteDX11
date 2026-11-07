@@ -37,7 +37,7 @@
 cbuffer Constants : register(b0) {
     uint2 TargetSize; uint2 FullSize;
     uint Level; uint ReservedSlots; int Radius; int Dilation;
-    uint DepthReverse; uint DepthFlip; uint FirstFrame; uint DepthLog;
+    uint DepthReverse; uint FirstFrame; uint DepthLog;
     float FarPlane; float Fov; float DepthMultiplier; float Reserved;
     uint2 ColorOrigin,DepthOrigin,DepthSize,MappingPadding;
     float2 DepthScale,DepthOffset,DepthPixelOffset,MappingPad;
@@ -331,7 +331,7 @@ float4 FlowVS(uint id:SV_VertexID):SV_Position {
     float2 uv=float2((id<<1)&2,id&2);return float4(uv*float2(2,-2)+float2(-1,1),0,1);
 }
 void PSPrepare(float4 pos:SV_Position,out float feature:SV_Target0,out float depth:SV_Target1) {
-    float2 uv=pos.xy/TargetSize,duv=uv;if(DepthFlip)duv.y=1-duv.y;
+    float2 uv=pos.xy/TargetSize,duv=uv;
     feature=dot(.3333,T0.Load(int3(int2(pos.xy)+int2(ColorOrigin),0)).rgb)+.05;
     duv/=DepthScale;
     duv.x-=DepthPixelOffset.x!=0?DepthPixelOffset.x/FullSize.x:DepthOffset.x/2.000000001;

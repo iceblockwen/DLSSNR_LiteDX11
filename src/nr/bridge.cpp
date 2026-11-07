@@ -180,7 +180,7 @@ struct Bridge11::Impl
     ComPtr<ID3D12CommandQueue>& queue;
     ComPtr<ID3D11Fence>& fence11;
     ComPtr<ID3D12Fence>& fence12;
-    ComPtr<ID3D11ComputeShader> depthShader, motionShader;
+    ComPtr<ID3D11ComputeShader> depthShader, depthFlipShader, motionShader;
     struct Slot
     {
         std::array<Twin, 3> twins;
@@ -339,6 +339,7 @@ struct Bridge11::Impl
             if (!depthShader)
             {
                 ThrowIfFailed(device11->CreateComputeShader(bridgeDepthShader, sizeof(bridgeDepthShader), nullptr, &depthShader));
+                ThrowIfFailed(device11->CreateComputeShader(bridgeDepthFlipShader, sizeof(bridgeDepthFlipShader), nullptr, &depthFlipShader));
             }
             return;
         }
@@ -450,7 +451,7 @@ struct Bridge11::Impl
         s.exposure.source = input.exposureResource;
         return true;
     }
-    void Fill(Twin& t, unsigned index)
+    void Fill(Twin& t, unsigned index, bool flip)
     {
         if (!t.source)
         {
@@ -471,7 +472,7 @@ struct Bridge11::Impl
         UINT keep = UINT(-1);
         context->CSSetShaderResources(0, 1, &srv);
         context->CSSetUnorderedAccessViews(0, 1, &uav, &keep);
-        context->CSSetShader(index == 1 ? depthShader.Get() : motionShader.Get(), nullptr, 0);
+        context->CSSetShader(index == 1 ? (flip ? depthFlipShader.Get() : depthShader.Get()) : motionShader.Get(), nullptr, 0);
         const auto w = t.outWidth ? t.outWidth : t.desc.Width, h = t.outHeight ? t.outHeight : t.desc.Height;
         context->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     }
@@ -552,6 +553,16 @@ struct Bridge11::Impl
             slot = std::move(fresh);
         }
         slot->frame.guides = input.guides;
+        if (slot->frame.guides.flipDepth && slot->frame.guides.height[1])
+        {
+            // Fill mirrors the depth twin, so the declared region has to travel with it: the model
+            // reads this rectangle and nothing else, and the flip moved the content.
+            const auto h = slot->twins[1].desc.Height;
+            if (h >= slot->frame.guides.height[1] + slot->frame.guides.originY[1])
+            {
+                slot->frame.guides.originY[1] = h - slot->frame.guides.originY[1] - slot->frame.guides.height[1];
+            }
+        }
         slot->frame.origin = input.origin;
         slot->frame.generatedMotion = false;
         for (unsigned n = 0; n < 3; ++n)
@@ -661,9 +672,9 @@ struct Bridge11::Impl
         }
         for (unsigned n = 0; n < 3; ++n)
         {
-            Fill(slot->twins[n], n);
+            Fill(slot->twins[n], n, n == 1 && input.guides.flipDepth);
         }
-        Fill(slot->exposure, 0);
+        Fill(slot->exposure, 0, false);
         const auto ready = ++value;
         ThrowIfFailed(context->Signal(fence11.Get(), ready));
         context->Flush();

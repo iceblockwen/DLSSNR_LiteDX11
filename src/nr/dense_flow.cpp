@@ -36,7 +36,7 @@ struct Pipelines
         D3D12_DESCRIPTOR_RANGE ranges[]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 7, 0, 0, 0}};
         D3D12_ROOT_PARAMETER params[2]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants = {0, 0, 32};
+        params[0].Constants = {0, 0, 31};
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[1].DescriptorTable = {1, ranges};
         D3D12_STATIC_SAMPLER_DESC samplers[3]{};
@@ -235,13 +235,13 @@ struct Constants
 {
     unsigned target[2], full[2], level;
     int radius, dilation;
-    unsigned reversed, flip, first, logarithmic;
+    unsigned reversed, first, logarithmic;
     float farPlane, fov, multiplier, reserved;
     unsigned colorOrigin[2], depthOrigin[2], depthSize[2], padding[2];
     float scale[2], offset[2], pixelOffset[2], mappingPad[2];
     unsigned reserved2;
 };
-static_assert(sizeof(Constants) == 128);
+static_assert(sizeof(Constants) == 124);
 }
 struct DenseFlow12::Impl
 {
@@ -419,7 +419,7 @@ struct DenseFlow12::Impl
             }
             ++count;
         }
-        Constants constants{{w, h}, {g.w, g.h}, level, radius, dilation, unsigned(g.reversed), unsigned(g.flip), unsigned(!g.frames), unsigned(g.settings.logarithmic), g.settings.farPlane, g.settings.fov, g.settings.depthMultiplier, 0, {g.guides.originX[0], g.guides.originY[0]}, {g.guides.originX[1], g.guides.originY[1]}, {g.guides.width[1], g.guides.height[1]}, {0, 0}, {g.settings.depthScaleX, g.settings.depthScaleY}, {g.settings.depthOffsetX, g.settings.depthOffsetY}, {g.settings.depthPixelOffsetX, g.settings.depthPixelOffsetY}, {0, 0}, 0};
+        Constants constants{{w, h}, {g.w, g.h}, level, radius, dilation, unsigned(g.reversed), unsigned(!g.frames), unsigned(g.settings.logarithmic), g.settings.farPlane, g.settings.fov, g.settings.depthMultiplier, 0, {g.guides.originX[0], g.guides.originY[0]}, {g.guides.originX[1], g.guides.originY[1]}, {g.guides.width[1], g.guides.height[1]}, {0, 0}, {g.settings.depthScaleX, g.settings.depthScaleY}, {g.settings.depthOffsetX, g.settings.depthOffsetY}, {g.settings.depthPixelOffsetX, g.settings.depthPixelOffsetY}, {0, 0}, 0};
         if (!record.stateSet)
         {
             auto* heap = record.heap.Get();
@@ -429,7 +429,7 @@ struct DenseFlow12::Impl
             record.stateSet = true;
         }
         list->SetPipelineState(pipelines->pso[stage].Get());
-        list->SetGraphicsRoot32BitConstants(0, 32, &constants, 0);
+        list->SetGraphicsRoot32BitConstants(0, 31, &constants, 0);
         list->SetGraphicsRootDescriptorTable(1, gpu);
         D3D12_VIEWPORT viewport{0, 0, float(w), float(h), 0, 1};
         D3D12_RECT scissor{0, 0, LONG(w), LONG(h)};

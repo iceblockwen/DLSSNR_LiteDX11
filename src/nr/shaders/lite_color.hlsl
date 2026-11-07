@@ -2,7 +2,7 @@
 // Reversible HDR proxy: identity below the knee, bounded highlights above it.
 // Encode/resolve keep the original white-point contract.
 cbuffer Params:register(b0) {
- uint mode,w,h,display;float white,preMul;uint liveExposure;uint guideX,guideY,guideW,guideH;
+ uint mode,w,h,display;float white,preMul;uint liveExposure;
  float differenceGain;uint composed;float exponent,trim;uint reserved;
 };
 Texture2D<float4> source:register(t0),model:register(t1),original:register(t2),exposure:register(t3);
@@ -75,10 +75,7 @@ float3 Compose(float3 base,float3 proxy,float3 raw){
 float3 ApplyGain(float3 base,float3 result){return max(base+clamp(differenceGain,0,2)*(result-base),0);}
 [numthreads(8,8,1)]void Main(uint3 id:SV_DispatchThreadID){
  if(id.x>=w||id.y>=h)return;
- if(mode==2){uint2 at=id.xy;
-  if(display&&id.x>=guideX&&id.x<guideX+guideW&&id.y>=guideY&&id.y<guideY+guideH)
-   at.y=guideY+guideH-1-(id.y-guideY);
-  target[id.xy]=source.Load(int3(at,0));return;} // typed conversion; flip only the declared depth region
+ if(mode==2){target[id.xy]=source.Load(int3(id.xy,0));return;} // typed re-write; coordinates are preserved
  if(mode==0){float4 s=source.Load(int3(id.xy,0));float3 c=max(s.rgb,0);
  target[id.xy]=display?float4(c,s.a):float4(LinearToSrgb(Encode(c/White())),1);return;}
  float4 base=original.Load(int3(id.xy,0));
