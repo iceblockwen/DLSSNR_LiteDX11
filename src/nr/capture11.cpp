@@ -723,6 +723,9 @@ void NativeFrame11(IDXGISwapChain* swap, ID3D11DeviceContext* context)
         // anyway, so a private intermediate copy here only cost one more full-frame pass.
         Input11 input{{buffer.Get(), found.image.Get(), nullptr}, {}};
         input.origin = InputOrigin::NativeCapture;
+        // A scRGB/FP16 backbuffer is scene-linear and routinely exceeds 1.0, so the pass has to
+        // encode it for the model instead of forwarding raw values as display domain.
+        input.exposure.sceneLinear = LinearColorFormat(desc.Format);
         input.guides.depthInverted = found.inverted;
         input.guides.flipDepth = DepthFlip();
         input.guides.displayScale = DisplayScale();
