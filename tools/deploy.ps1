@@ -28,7 +28,8 @@ $dlls = @("$Entry.dll", 'nvngx.dll_litedx11.dll')
 $iniName = 'DLSSNR_LiteDX11.ini'
 $modelName = 'nvngx_dlssnr.dll'
 if (-not $Source) { $Source = Join-Path $root 'dist\Release' }
-if (-not $Model) { $Model = Join-Path (Split-Path -Parent $root) $modelName }
+# The model ships in a versioned package folder, never beside the repository.
+if (-not $Model) { $Model = Join-Path (Split-Path -Parent $root) 'DLSSNR_Model\nvngx_dlssnr_2026_10\nvngx_dlssnr.dll' }
 
 if (-not $Target -and -not $Path) {
     foreach ($name in $games.Keys) {
