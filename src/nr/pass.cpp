@@ -289,11 +289,6 @@ struct PassExecutor12::Impl
     UINT64 whiteEpoch{};
     bool initialized{}, attempted{};
     HRESULT initializationError = S_OK;
-    bool domainKnown{}, linearDomain{};
-    bool restoreKnown{}, composedRestore{};
-    unsigned guideWidth[2]{}, guideHeight[2]{};
-    Guides previousGuides;
-    bool haveGuides{};
     // Per-input verdict of the identity, device and format checks. A bridge keeps
     // its textures until the slot is rebuilt, so this only invalidates there.
     struct Checked
@@ -536,7 +531,6 @@ struct PassExecutor12::Impl
                 context.reset();
                 white.Reset();
                 ++whiteEpoch;
-                domainKnown = haveGuides = false;
                 status.gpuExposureValid = false;
                 status.readyPasses = status.failedPass = 0;
                 status.timingValid = false;
@@ -546,7 +540,13 @@ struct PassExecutor12::Impl
                                        previous->input.ticket->SubmittedOn(frame.orderedQueue.Get());
             if (!previous->input.ticket->Complete() && !canFollow() && !tuningRebuild)
             {
-                RestartHistory();
+                // Only work that cannot be ordered invalidates history: a recording submitted on
+                // the queue this frame follows can be waited on, so a reallocated guide no longer
+                // costs the accumulation.
+                if (!previous->input.ticket->SubmittedOn(frame.orderedQueue.Get()))
+                {
+                    RestartHistory();
+                }
                 status.ready = false;
                 status.reason = "Waiting for NR creation, rebuild or unknown-queue recording";
                 return S_FALSE;
@@ -555,50 +555,6 @@ struct PassExecutor12::Impl
         const UINT64 now = GetTickCount64();
         float dt = tick ? float(now - tick) * .001f : 0;
         tick = now;
-        if (domainKnown && linearDomain != exposure.sceneLinear)
-        {
-            reset = true;
-        }
-        linearDomain = exposure.sceneLinear;
-        domainKnown = true;
-        if (restoreKnown && composedRestore != settings.composed)
-        {
-            reset = true;
-        }
-        restoreKnown = true;
-        composedRestore = settings.composed;
-        for (unsigned n = 0; n < 2; ++n)
-        {
-            auto d = frame.resources[n + 1]->GetDesc();
-            if (guideWidth[n] && (guideWidth[n] != d.Width || guideHeight[n] != d.Height))
-            {
-                reset = true;
-            }
-            guideWidth[n] = unsigned(d.Width);
-            guideHeight[n] = d.Height;
-        }
-        if (haveGuides)
-        {
-            if (previousGuides.flipDepth != frame.guides.flipDepth ||
-                previousGuides.depthInverted != frame.guides.depthInverted ||
-                previousGuides.motionScaleX != frame.guides.motionScaleX ||
-                previousGuides.motionScaleY != frame.guides.motionScaleY)
-            {
-                reset = true;
-            }
-            for (unsigned n = 1; n < 3; ++n)
-            {
-                if (previousGuides.originX[n] != frame.guides.originX[n] ||
-                    previousGuides.originY[n] != frame.guides.originY[n] ||
-                    previousGuides.width[n] != frame.guides.width[n] ||
-                    previousGuides.height[n] != frame.guides.height[n])
-                {
-                    reset = true;
-                }
-            }
-        }
-        previousGuides = frame.guides;
-        haveGuides = true;
         if (reset)
         {
             white.Reset();
