@@ -19,6 +19,7 @@ $games = [ordered]@{
     roe = 'H:\Games\RiseOfEros'
     wildlands = "G:\UBisoft\Tom Clancy's Ghost Recon Wildlands"
     bannerlord = 'F:\SteamLibrary\steamapps\common\Mount & Blade II Bannerlord\bin\Win64_Shipping_Client'
+    odyssey = 'F:\SteamLibrary\steamapps\common\Assassins Creed Odyssey'
 }
 # Every entry this plugin can ship. Exactly one belongs in a game folder; the
 # others stay free for other mods (or as <name>-original.dll in a chain).
