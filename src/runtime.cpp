@@ -99,7 +99,7 @@ void Initialize(HMODULE plugin, HMODULE system)
         }
         ini = InitializeConfigStorage((folder / L"DLSSNR_LiteDX11.ini").wstring());
         status.enabled = GetPrivateProfileIntW(L"General", L"Enabled", 1, ini.c_str()) != 0;
-        const int configured = GetPrivateProfileIntW(L"Diagnostics", L"Level", 1, ini.c_str());
+        const int configured = GetPrivateProfileIntW(L"Diagnostics", L"Level", 0, ini.c_str());
         level = configured < 0 ? 0u : (configured > 2 ? 2u : unsigned(configured));
         status.logging = level >= 1;
         status.loader = status.enabled ? State::Ready : State::Disabled;
