@@ -556,8 +556,11 @@ struct Bridge11::Impl
         if (slot->frame.guides.flipDepth && slot->frame.guides.height[1])
         {
             // Fill mirrors the depth twin, so the declared region has to travel with it: the model
-            // reads this rectangle and nothing else, and the flip moved the content.
-            const auto h = slot->twins[1].desc.Height;
+            // reads this rectangle and nothing else, and the flip moved the content. Size it from the
+            // twin, not from desc: Fill mirrors in the twin's own space, and a downscaled twin is
+            // shorter than the source it was made from.
+            const auto& twin = slot->twins[1];
+            const auto h = twin.outHeight ? twin.outHeight : twin.desc.Height;
             if (h >= slot->frame.guides.height[1] + slot->frame.guides.originY[1])
             {
                 slot->frame.guides.originY[1] = h - slot->frame.guides.originY[1] - slot->frame.guides.height[1];
