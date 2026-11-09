@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Reversible HDR proxy: identity below the knee, bounded highlights above it.
-// Encode/resolve keep the original white-point contract.
-cbuffer Params:register(b0) {
- uint mode,w,h,display;float white,preMul;uint liveExposure;
- float differenceGain;uint composed;float exponent,trim;uint reserved;
-};
-Texture2D<float4> source:register(t0),model:register(t1),original:register(t2),exposure:register(t3);
-RWTexture2D<float4> target:register(u0);
+// Shared math for the three Lite color passes: the white-point contract, the
+// reversible HDR proxy curve, the sRGB transfer and the OkLab compose that keeps
+// the original frame's highlights. Each pass declares cbuffer Params and its
+// exposure texture before including this file, so the names below resolve there.
 // Fixed safety bound: no UI/INI switch, matches the former MaxRatio=16 default.
 static const float MaxLuminanceRatio=16.0;
 float White(){
@@ -73,23 +69,3 @@ float3 Compose(float3 base,float3 proxy,float3 raw){
 // Preserve negative residuals for darkening, clamp the amplified RGB result.
 // Do not saturate to 1: scene-linear HDR values can legitimately exceed it.
 float3 ApplyGain(float3 base,float3 result){return max(base+clamp(differenceGain,0,2)*(result-base),0);}
-[numthreads(8,8,1)]void Main(uint3 id:SV_DispatchThreadID){
- if(id.x>=w||id.y>=h)return;
- if(mode==2){target[id.xy]=source.Load(int3(id.xy,0));return;} // typed re-write; coordinates are preserved
- if(mode==0){float4 s=source.Load(int3(id.xy,0));float3 c=max(s.rgb,0);
- target[id.xy]=display?float4(c,s.a):float4(LinearToSrgb(Encode(c/White())),1);return;}
- float4 base=original.Load(int3(id.xy,0));
- base.rgb=max(base.rgb,0);
- float3 proxy=source.Load(int3(id.xy,0)).rgb;
- float3 raw=model.Load(int3(id.xy,0)).rgb;
- if(!display){proxy=SrgbToLinear(proxy);raw=SrgbToLinear(raw);}
-
- float3 answer=display?raw:Decode(raw);
- float norm=display?1:White();float originalLuma=dot(base.rgb,float3(.2126,.7152,.0722))/norm;
- float modelLuma=dot(answer,float3(.2126,.7152,.0722));float3 result=base.rgb/norm;
- if(composed)result=Compose(result,proxy,raw);
- else if(modelLuma>1e-5)result=answer*(clamp(modelLuma,originalLuma/MaxLuminanceRatio,originalLuma*MaxLuminanceRatio)/modelLuma);
- result*=norm;
- result=ApplyGain(base.rgb,result);
- target[id.xy]=float4(max(result,0),base.a);
-}

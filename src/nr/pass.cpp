@@ -185,7 +185,7 @@ struct Recording
     Frame12 input;
     ComPtr<ID3D12Resource> exposure;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> pipeline;
+    ComPtr<ID3D12PipelineState> encodePso, resolvePso, guidePso;
     ComPtr<ID3D12DescriptorHeap> heap;
     std::shared_ptr<WhiteReadback> meter;
     std::shared_ptr<TimingResources> timing;
@@ -272,7 +272,7 @@ struct PassExecutor12::Impl
     ComPtr<ID3D12Device> device;
     ModelRuntime& backend;
     ComPtr<ID3D12RootSignature> root;
-    ComPtr<ID3D12PipelineState> pipeline;
+    ComPtr<ID3D12PipelineState> encodePso, resolvePso, guidePso;
     std::unique_ptr<WhiteMeter12> meter;
     WhitePoint white;
     std::shared_ptr<Context> context;
@@ -336,15 +336,20 @@ struct PassExecutor12::Impl
     }
     void Shaders()
     {
-        if (root && pipeline)
+        if (root && resolvePso)
         {
             return;
         }
         D3D12_DESCRIPTOR_RANGE ranges[2]{{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0},
                                          {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 4}};
-        // The shader only uses Load(), so the root signature needs no sampler.
-        ComputePipeline(device.Get(), ranges, 2, 12, liteColorShader, sizeof(liteColorShader),
-                        root.ReleaseAndGetAddressOf(), pipeline.ReleaseAndGetAddressOf());
+        // The shaders only use Load(), so the root signature needs no sampler.
+        // One root signature, three pipelines: encode, resolve and guide retyping.
+        ComputePipeline(device.Get(), ranges, 2, 12, liteEncodeShader, sizeof(liteEncodeShader),
+                        root.GetAddressOf(), encodePso.GetAddressOf());
+        ComputePipeline(device.Get(), ranges, 2, 12, liteResolveShader, sizeof(liteResolveShader),
+                        root.GetAddressOf(), resolvePso.GetAddressOf());
+        ComputePipeline(device.Get(), ranges, 2, 12, liteGuideShader, sizeof(liteGuideShader),
+                        root.GetAddressOf(), guidePso.GetAddressOf());
     }
     HRESULT Record(ID3D12GraphicsCommandList* list, const Frame12& frame, const Exposure& exposure,
                    const PassSettings& settings, bool reset,
@@ -746,7 +751,9 @@ struct PassExecutor12::Impl
         }
         recording->layer = ctx->layer;
         recording->root = root;
-        recording->pipeline = pipeline;
+        recording->encodePso = encodePso;
+        recording->resolvePso = resolvePso;
+        recording->guidePso = guidePso;
         if (!ctx->answer)
         {
             ctx->answer = Texture(device.Get(), ctx->w, ctx->h, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -830,13 +837,14 @@ struct PassExecutor12::Impl
         uav(11, nullptr);
         struct Constants
         {
-            unsigned mode, w, h, display;
+            unsigned w, h, display;
             float white, preMul;
             unsigned live;
             float differenceGain;
             unsigned composed;
             float exponent, trim;
             unsigned reserved;
+            float sharpness;
         } c{};
         c.w = ctx->w;
         c.h = ctx->h;
@@ -845,6 +853,7 @@ struct PassExecutor12::Impl
         c.preMul = 1;
         c.differenceGain = settings.differenceGain;
         c.composed = settings.composed ? 1u : 0u;
+        c.sharpness = settings.sharpness;
         c.exponent = settings.white.exponent;
         c.trim = settings.white.trim;
         const bool live =
@@ -868,17 +877,17 @@ struct PassExecutor12::Impl
         recording->whiteExponent = c.exponent;
         recording->whiteTrim = c.trim;
         recording->fallbackWhite = c.white;
-        auto run = [&](unsigned offset)
+        auto run = [&](unsigned offset, const Constants& constants, ID3D12PipelineState* state)
         {
             auto* heap = recording->heap.Get();
             list->SetDescriptorHeaps(1, &heap);
             list->SetComputeRootSignature(root.Get());
-            list->SetPipelineState(pipeline.Get());
+            list->SetPipelineState(state);
             auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
             gpu.ptr += UINT64(offset) * viewStride;
             list->SetComputeRootDescriptorTable(0, gpu);
-            list->SetComputeRoot32BitConstants(1, 12, &c, 0);
-            list->Dispatch((ctx->w + 7) / 8, (ctx->h + 7) / 8, 1);
+            list->SetComputeRoot32BitConstants(1, 12, &constants, 0);
+            list->Dispatch((constants.w + 7) / 8, (constants.h + 7) / 8, 1);
         };
         ID3D12Resource* guides[2]{frame.resources[1].Get(), frame.resources[2].Get()};
         for (unsigned n = 0; n < 2; ++n)
@@ -907,19 +916,10 @@ struct PassExecutor12::Impl
             }
             uav(table + 4, twin.Get());
             uav(table + 5, nullptr);
-            auto* heap = recording->heap.Get();
-            list->SetDescriptorHeaps(1, &heap);
-            list->SetComputeRootSignature(root.Get());
-            list->SetPipelineState(pipeline.Get());
-            auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
-            gpu.ptr += UINT64(table) * viewStride;
-            list->SetComputeRootDescriptorTable(0, gpu);
             auto guideConstants = c;
-            guideConstants.mode = 2;
             guideConstants.w = unsigned(d.Width);
             guideConstants.h = d.Height;
-            list->SetComputeRoot32BitConstants(1, 12, &guideConstants, 0);
-            list->Dispatch((guideConstants.w + 7) / 8, (guideConstants.h + 7) / 8, 1);
+            run(table, guideConstants, guidePso.Get());
             Transition(list, twin.Get(), UAV, SRV);
             guides[n] = twin.Get();
         }
@@ -958,7 +958,7 @@ struct PassExecutor12::Impl
         }
         if (ctx->encoded)
         {
-            run(0);
+            run(0, c, encodePso.Get());
             Transition(list, ctx->proxy.Get(), UAV, SRV);
         }
         // One feature evaluates the immutable encoded input exactly once.
@@ -1035,8 +1035,7 @@ struct PassExecutor12::Impl
                 entry.Add(ctx->output.Get(), SRV, UAV);
             }
             entry.Flush(list);
-            c.mode = 1;
-            run(6);
+            run(6, c, resolvePso.Get());
             Transition(list, resolveTarget, UAV, SRV);
             if (!frame.colorOutput)
             {

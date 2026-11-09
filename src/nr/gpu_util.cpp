@@ -18,11 +18,14 @@ void ComputePipeline(ID3D12Device* device, const D3D12_DESCRIPTOR_RANGE* ranges,
         parameters[1].Constants = {0, 0, constantWords};
         count = 2;
     }
-    D3D12_ROOT_SIGNATURE_DESC desc{count, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
-    ComPtr<ID3DBlob> code, error;
-    ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &code, &error));
-    ThrowIfFailed(device->CreateRootSignature(0, code->GetBufferPointer(), code->GetBufferSize(),
-                                              IID_PPV_ARGS(root)));
+    if (!*root)
+    {
+        D3D12_ROOT_SIGNATURE_DESC desc{count, parameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+        ComPtr<ID3DBlob> code, error;
+        ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &code, &error));
+        ThrowIfFailed(device->CreateRootSignature(0, code->GetBufferPointer(), code->GetBufferSize(),
+                                                  IID_PPV_ARGS(root)));
+    }
     D3D12_COMPUTE_PIPELINE_STATE_DESC state{};
     state.pRootSignature = *root;
     state.CS = {bytecode, bytecodeSize};

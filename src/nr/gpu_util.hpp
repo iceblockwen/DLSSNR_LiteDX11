@@ -5,6 +5,7 @@
 #include <cstddef>
 namespace lite::nr
 {
+// A null *root is created here; an existing one is shared by the new pipeline.
 void ComputePipeline(ID3D12Device*, const D3D12_DESCRIPTOR_RANGE* ranges, unsigned rangeCount,
                      unsigned constantWords, const void* bytecode, size_t bytecodeSize,
                      ID3D12RootSignature** root, ID3D12PipelineState** pipeline);

@@ -60,6 +60,7 @@ void ConfigureModel(const wchar_t* ini)
     p.white.exponent = Float(ini, L"WhiteExponent", L"1");
     p.differenceGain = Float(ini, L"DifferenceGain", L"1");
     p.composed = GetPrivateProfileIntW(L"NeuralRendering", L"ComposedRestore", 1, ini) != 0;
+    p.sharpness = Float(ini, L"Sharpness", L"0");
 
     SetModelSettings(s, false);
 }
@@ -82,6 +83,7 @@ void SetModelSettings(const ModelSettings& input, bool persist)
     p.autoMask = p.autoMask ? 1u : 0u;
     p.uiCorrection = p.uiCorrection ? 1u : 0u;
     p.differenceGain = Clamped(p.differenceGain, 0, 2, 1);
+    p.sharpness = Clamped(p.sharpness, 0, 2, 0);
 
     p.intensity = Clamped(p.intensity, 0, 2, 1);
     p.structure = Clamped(p.structure, 0, 2, 1);
@@ -128,6 +130,7 @@ void SetModelSettings(const ModelSettings& input, bool persist)
     Save(L"WhiteUseExposureScale", w.useExposureScale ? 1.f : 0.f);
     Save(L"DifferenceGain", p.differenceGain);
     Save(L"ComposedRestore", p.composed ? 1.f : 0.f);
+    Save(L"Sharpness", p.sharpness);
     Save(L"Enabled", s.enabled ? 1.f : 0.f);
     Save(L"Preset", float(p.preset));
     Save(L"Style", float(p.style));

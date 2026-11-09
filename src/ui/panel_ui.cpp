@@ -475,6 +475,10 @@ void Panel::Impl::BuildUi()
                         {
                             ItemTip("1: normal NR | 0: original | 2: doubles the change. Applied once after NR.");
                         }
+                        else if (std::strcmp(label, "Sharpness") == 0)
+                        {
+                            ItemTip("Unsharp mask applied by the resolve before the game's output is written. 0 is off and costs nothing. Default: off.");
+                        }
                         ImGui::SameLine();
                         ImGui::PushID(label);
                         modelChanged |= ResetValue(value, initial);
@@ -529,6 +533,7 @@ void Panel::Impl::BuildUi()
                     slider("Difference gain", modelSettings.pass.differenceGain, 0, 2, 1);
                     modelChanged |= ImGui::Checkbox("Preserve HDR highlights", &modelSettings.pass.composed);
                     ItemTip("Compose the model result with the original input; off applies the model output directly. Switching resets NR history.");
+                    slider("Sharpness", modelSettings.pass.sharpness, 0, 2, 0);
                 }
                 else
                 {
