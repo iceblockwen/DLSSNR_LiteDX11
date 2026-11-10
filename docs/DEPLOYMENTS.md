@@ -1,3 +1,13 @@
+# 2026-11-10 移除 `Sharpness`（unsharp mask）
+
+与 DX12 同步：实测无收益，成本是每像素 4 次邻域采样加 4 次 `SrgbToLinear`。删除
+`lite_resolve.hlsl` 的锐化分支与 cbuffer 字段、`PassSettings::sharpness`、INI 的
+`Sharpness` 键、面板滑块与 tooltip。
+
+常量块 12 → 11 word，共享根签名与 `SetComputeRoot32BitConstants` 同步；`encode`
+本来就声明 11 个字段、`guide` 只有 2 个。`preview` 是独立根签名，保持 12。
+
+产物 1,200,640 → 1,197,568 B（-3,072）。
 # 2026-11-03 DX11 `Present1` 回到基线纯转发（最省）
 
 `/W4` 零错误零警告。**最终产物** `1228800 B`，已铺到 `bg3` / `roe` / `wildlands` / `bannerlord`。
