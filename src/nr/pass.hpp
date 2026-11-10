@@ -14,9 +14,6 @@ struct PassSettings
     bool panelStatistics{}; // runtime demand only; never persisted
     float differenceGain = 1;
     bool composed = true;
-    // Unsharp amount applied by the resolve before the game's output is written:
-    // 0 is off and costs nothing (a frame-uniform branch).
-    float sharpness{};
 
     unsigned preset{}, style{}, autoMask = 1, uiCorrection{};
     float intensity = 1, structure = 1, tone = 1, skin = -1;

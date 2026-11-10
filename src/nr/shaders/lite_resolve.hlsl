@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The NR answer in the game's own signal: proxy decode, white-point restore, the
-// OkLab compose that keeps the original highlights, gain, unsharp and alpha.
+// OkLab compose that keeps the original highlights, gain and alpha.
 // Former lite_color mode 1.
 cbuffer Params:register(b0) {
  uint w,h,display;float white,preMul;uint liveExposure;
  float differenceGain;uint composed;float exponent,trim;uint reserved;
- float sharpness;
 };
 Texture2D<float4> source:register(t0),model:register(t1),original:register(t2),exposure:register(t3);
 RWTexture2D<float4> target:register(u0);
@@ -23,22 +22,6 @@ RWTexture2D<float4> target:register(u0);
  float modelLuma=dot(answer,float3(.2126,.7152,.0722));float3 result=base.rgb/norm;
  if(composed)result=Compose(result,proxy,raw);
  else if(modelLuma>1e-5)result=answer*(clamp(modelLuma,originalLuma/MaxLuminanceRatio,originalLuma*MaxLuminanceRatio)/modelLuma);
- // Unsharp mask from the model answer, in the same normalised domain as `result` and
- // after Compose, whose last step rewrites the local luma. The neighbourhood is read
- // from `model`, never from `original`: with a bridge-provided colour output that
- // texture is the one being written. Recorded before ApplyGain so DifferenceGain
- // scales the sharpening with the rest of the difference, and before the white-point
- // multiply so the amount does not scale with the exposure. A frame-uniform branch:
- // sharpness 0 costs nothing.
- if(sharpness>0){
-  uint2 p=max(id.xy-1u,0u),q=min(id.xy+1u,uint2(w-1,h-1));
-  float3 n0=model.Load(int3(p.x,id.y,0)).rgb,n1=model.Load(int3(q.x,id.y,0)).rgb;
-  float3 n2=model.Load(int3(id.x,p.y,0)).rgb,n3=model.Load(int3(id.x,q.y,0)).rgb;
-  if(!display){n0=SrgbToLinear(n0);n1=SrgbToLinear(n1);n2=SrgbToLinear(n2);n3=SrgbToLinear(n3);}
-  float3 blur=(n0+n1+n2+n3)*.25;
-  float3 lo=min(min(n0,n1),min(n2,n3)),hi=max(max(n0,n1),max(n2,n3));
-  result+=clamp(raw-blur,lo-blur,hi-blur)*sharpness;
- }
  result*=norm;
  result=ApplyGain(base.rgb,result);
  target[id.xy]=float4(max(result,0),base.a);

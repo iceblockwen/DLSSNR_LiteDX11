@@ -344,11 +344,11 @@ struct PassExecutor12::Impl
                                          {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 4}};
         // The shaders only use Load(), so the root signature needs no sampler.
         // One root signature, three pipelines: encode, resolve and guide retyping.
-        ComputePipeline(device.Get(), ranges, 2, 12, liteEncodeShader, sizeof(liteEncodeShader),
+        ComputePipeline(device.Get(), ranges, 2, 11, liteEncodeShader, sizeof(liteEncodeShader),
                         root.GetAddressOf(), encodePso.GetAddressOf());
-        ComputePipeline(device.Get(), ranges, 2, 12, liteResolveShader, sizeof(liteResolveShader),
+        ComputePipeline(device.Get(), ranges, 2, 11, liteResolveShader, sizeof(liteResolveShader),
                         root.GetAddressOf(), resolvePso.GetAddressOf());
-        ComputePipeline(device.Get(), ranges, 2, 12, liteGuideShader, sizeof(liteGuideShader),
+        ComputePipeline(device.Get(), ranges, 2, 11, liteGuideShader, sizeof(liteGuideShader),
                         root.GetAddressOf(), guidePso.GetAddressOf());
     }
     HRESULT Record(ID3D12GraphicsCommandList* list, const Frame12& frame, const Exposure& exposure,
@@ -844,7 +844,6 @@ struct PassExecutor12::Impl
             unsigned composed;
             float exponent, trim;
             unsigned reserved;
-            float sharpness;
         } c{};
         c.w = ctx->w;
         c.h = ctx->h;
@@ -853,7 +852,6 @@ struct PassExecutor12::Impl
         c.preMul = 1;
         c.differenceGain = settings.differenceGain;
         c.composed = settings.composed ? 1u : 0u;
-        c.sharpness = settings.sharpness;
         c.exponent = settings.white.exponent;
         c.trim = settings.white.trim;
         const bool live =
@@ -886,7 +884,7 @@ struct PassExecutor12::Impl
             auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
             gpu.ptr += UINT64(offset) * viewStride;
             list->SetComputeRootDescriptorTable(0, gpu);
-            list->SetComputeRoot32BitConstants(1, 12, &constants, 0);
+            list->SetComputeRoot32BitConstants(1, 11, &constants, 0);
             list->Dispatch((constants.w + 7) / 8, (constants.h + 7) / 8, 1);
         };
         ID3D12Resource* guides[2]{frame.resources[1].Get(), frame.resources[2].Get()};
