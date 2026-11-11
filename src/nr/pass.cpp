@@ -26,16 +26,24 @@ bool Plain(ID3D12Resource* r)
            d.MipLevels == 1 && d.SampleDesc.Count == 1 && d.Width && d.Height;
 }
 // Settings arrive validated by SetModelSettings; only game-provided values are bounded here.
-void Tuning(ModelRuntime::Batch& backend, const PassSettings& s)
+// The two the model reads while building the feature. Changing either rebuilds the layer, so
+// there is no evaluate-time write to keep in step with.
+void BuildSettings(ModelRuntime::Batch& backend, const PassSettings& s)
 {
     backend.SetUnsigned("DLSSNR.Hint.Render.Preset", s.preset);
+    backend.SetUnsigned("DLSSNR.UICorrection", s.uiCorrection ? 1u : 0u);
+}
+// The rest of the tuning. Also read while the feature is built, but kept apart from
+// BuildSettings because these six are the ones a later model version might start reading per
+// frame; keeping them separate is what makes that change a one-line move.
+void Tuning(ModelRuntime::Batch& backend, const PassSettings& s)
+{
     backend.SetUnsigned("DLSSNR.Style", s.style);
     backend.SetFloat("DLSSNR.Intensity", s.intensity);
     backend.SetFloat("DLSSNR.LocalStructureStrength", s.structure);
     backend.SetFloat("DLSSNR.LocalToneStrength", s.tone);
     backend.SetFloat("DLSSNR.SkinStructureStrength", s.skin);
     backend.SetUnsigned("DLSSNR.UseAutoMask", s.autoMask ? 1u : 0u);
-    backend.SetUnsigned("DLSSNR.UICorrection", s.uiCorrection ? 1u : 0u);
 }
 // One entry per NGX region name. The key strings are constants, so the per-frame
 // parameter pass never builds a std::string.
@@ -712,19 +720,6 @@ struct PassExecutor12::Impl
         keep = recording; // registered before the first model/GPU operation
         if (!ctx->layer)
         {
-            {
-                // Creation-time configuration: the model reads these when the feature is
-                // created, and every tuning change drops the layer before coming back here.
-                // One lock for the whole group; Create below takes its own.
-                ModelRuntime::Batch params(backend);
-                params.SetUnsigned("DLSSNR.Enabled", 1u);
-                params.SetUnsigned("DLSSNR.Width", ctx->w);
-                params.SetUnsigned("DLSSNR.Height", ctx->h);
-                params.SetUnsigned("CreationNodeMask", 1u);
-                params.SetUnsigned("VisibilityNodeMask", 1u);
-                Tuning(params, settings);
-                params.SetResource("DLSSNR.ControlMask", nullptr);
-            }
             // Validate resources before letting the model record initialization.
             Shaders();
             auto layer = std::make_shared<Layer>();
@@ -734,6 +729,18 @@ struct PassExecutor12::Impl
             recording->layer = layer;
             previous = recording;
             layer->historyReset = true; // creation frame skips temporal evaluation
+            // Creation-time configuration: the model reads all of this while the feature is
+            // built, and every tuning change drops the layer before coming back here. Written
+            // under the same lock as the call, so another stream cannot land between the two.
+            ModelRuntime::Batch params(backend);
+            params.SetUnsigned("DLSSNR.Enabled", 1u);
+            params.SetUnsigned("DLSSNR.Width", ctx->w);
+            params.SetUnsigned("DLSSNR.Height", ctx->h);
+            params.SetUnsigned("CreationNodeMask", 1u);
+            params.SetUnsigned("VisibilityNodeMask", 1u);
+            BuildSettings(params, settings);
+            Tuning(params, settings);
+            params.SetResource("DLSSNR.ControlMask", nullptr);
             const auto rc = backend.Create(list, &layer->feature);
             status.ngxResult = rc;
             status.ready = false;
