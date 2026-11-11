@@ -140,7 +140,9 @@ struct Layer
     ModelRuntime* backend{};
     void* feature{};
     std::shared_ptr<GpuTicket> last;
-    bool first = true, failed{};
+    // Pending history reset: passed as DLSSNR.Reset on the next evaluation and cleared
+    // only after that evaluation succeeds, so a failure keeps asking for one.
+    bool historyReset = true, failed{};
     ~Layer()
     {
         ParkFeature(feature, backend, last);
@@ -312,7 +314,7 @@ struct PassExecutor12::Impl
     {
         if (context && context->layer)
         {
-            context->layer->first = true;
+            context->layer->historyReset = true;
         }
     }
     std::shared_ptr<TimingResources> AcquireTiming()
@@ -686,7 +688,7 @@ struct PassExecutor12::Impl
         }
         if (reset && ctx->layer)
         {
-            ctx->layer->first = true;
+            ctx->layer->historyReset = true;
         }
         auto recording = std::make_shared<Recording>();
         recording->context = ctx;
@@ -731,7 +733,7 @@ struct PassExecutor12::Impl
             ctx->layer = layer;
             recording->layer = layer;
             previous = recording;
-            layer->first = true; // creation frame skips temporal evaluation
+            layer->historyReset = true; // creation frame skips temporal evaluation
             const auto rc = backend.Create(list, &layer->feature);
             status.ngxResult = rc;
             status.ready = false;
@@ -974,7 +976,7 @@ struct PassExecutor12::Impl
                 // Estimator distrust is a Debug guide, not the NR application mask.
                 params.SetResource("DLSSNR.Color", input);
                 params.SetResource("DLSSNR.Output", answer);
-                params.SetUnsigned("DLSSNR.Reset", layer->first ? 1u : 0u);
+                params.SetUnsigned("DLSSNR.Reset", layer->historyReset ? 1u : 0u);
                 params.SetResource("DLSSNR.Depth", guides[0]);
                 params.SetResource("DLSSNR.MVec", guides[1]);
                 params.SetUnsigned("DLSSNR.DepthInverted", frame.guides.depthInverted ? 1u : 0u);
@@ -1015,7 +1017,7 @@ struct PassExecutor12::Impl
                 entry.Add(answer, UAV, SRV);
                 readable = true;
                 final = answer;
-                layer->first = false;
+                layer->historyReset = false;
                 status.actualPasses = 1;
             }
         }
