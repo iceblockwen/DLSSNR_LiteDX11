@@ -604,12 +604,16 @@ void Panel::Impl::BuildUi()
                 ItemTip(
                     "Game exposure uses the game's exposure inputs. Measured input estimates white from the original image and applies the filter below. Manual uses a fixed value. Display input bypasses normalization. Default: Game exposure.");
                 const nr::WhiteSettings defaults;
+                // The tip is passed in rather than written after a call: the reset button that
+                // follows the slider is the last submitted item, so an ItemTip placed after the
+                // row attaches to that button and never shows on the slider itself.
                 auto whiteSlider = [&](const char* label, float& value, float low, float high,
-                                       float initial, const char* format = "%.3f",
+                                       float initial, const char* tip, const char* format = "%.3f",
                                        ImGuiSliderFlags flags = 0)
                 {
                     SliderResetWidth(label);
                     modelChanged |= PanelSliderFloat(label, &value, low, high, format, flags);
+                    ItemTip(tip);
                     ImGui::SameLine();
                     ImGui::PushID(label);
                     modelChanged |= ResetValue(value, initial);
@@ -637,14 +641,17 @@ void Panel::Impl::BuildUi()
                     ItemTip(
                         "Use a supplied 1 x 1 game exposure texture. Off selects the scalar path; unchecked scalar inputs are 1. For texture only, leave this checked and uncheck both scalar inputs. Default: on.");
                     whiteSlider("Game exponent", modelSettings.pass.white.exponent, .1f, 4.f,
-                                defaults.exponent, "%.3f");
-                    ItemTip(
-                        "Raises the game exposure ratio to this power before the trim. 1 is the plain linear mapping. Below 1 compresses the range so one trim covers both bright and dark scenes; above 1 expands it. Only affects the game exposure white point.");
+                                defaults.exponent,
+                                "Raises the game exposure ratio to this power before the trim. 1 is the plain linear mapping. Below 1 compresses the range so one trim covers both bright and dark scenes; above 1 expands it. Only affects the game exposure white point.");
                 }
                 whiteSlider("Manual / fallback", modelSettings.pass.white.manual, 1e-8f, 1024.f,
-                            defaults.manual, "%.9g", ImGuiSliderFlags_Logarithmic);
+                            defaults.manual,
+                            "White point used by the Manual mode, and the value every other mode falls back to until it has resolved one of its own. Display input uses it too, because a bypassed signal has no exposure to divide by.",
+                            "%.9g", ImGuiSliderFlags_Logarithmic);
                 whiteSlider("White trim", modelSettings.pass.white.trim, .001f, 1024.f,
-                            defaults.trim, "%.6g", ImGuiSliderFlags_Logarithmic);
+                            defaults.trim,
+                            "Multiplier on the resolved white point, applied on every mode. It scales the divisor, so lowering it brightens the frame; use it to correct a systematic offset without changing the shape of the response.",
+                            "%.6g", ImGuiSliderFlags_Logarithmic);
                 ImGui::SeparatorText("Current white point");
                 const ImVec4 green(.35f, .9f, .55f, 1), blue(.45f, .75f, 1, 1),
                     amber(1, .78f, .3f, 1), muted(.7f, .7f, .7f, 1);
@@ -742,15 +749,25 @@ void Panel::Impl::BuildUi()
                     if (whiteMode == 1)
                     {
                         whiteSlider("Mid-gray anchor", modelSettings.pass.white.anchor, .02f, 1.f,
-                                    defaults.anchor);
+                                    defaults.anchor,
+                                    "Luminance the measured log-average is assumed to sit at when divided by one. 0.18 is middle grey. Raise it when the scene should read darker, lower it when brighter.",
+                                    "%.4g");
                         whiteSlider("Filter seconds", modelSettings.pass.white.tau, .001f, 60.f,
-                                    defaults.tau, "%.3g", ImGuiSliderFlags_Logarithmic);
+                                    defaults.tau,
+                                    "Time constant of the smoothing applied to the measured white point. Larger values move slowly and ignore brief peaks; smaller values follow the scene but let flicker through.",
+                                    "%.3g", ImGuiSliderFlags_Logarithmic);
                         whiteSlider("Deadband", modelSettings.pass.white.deadband, 0, 1.f,
-                                    defaults.deadband);
+                                    defaults.deadband,
+                                    "How far the target must move, as a fraction of the current white, before the filter updates at all. Suppresses the constant small corrections a static scene would otherwise produce.",
+                                    "%.4g");
                         whiteSlider("Attack (stops/s)", modelSettings.pass.white.attack, 0, 16.f,
-                                    defaults.attack, "%.2f");
+                                    defaults.attack,
+                                    "Fastest the white point may rise per second, in stops. Caps how quickly the image darkens when the scene turns bright.",
+                                    "%.2f");
                         whiteSlider("Release (stops/s)", modelSettings.pass.white.release, 0, 16.f,
-                                    defaults.release, "%.2f");
+                                    defaults.release,
+                                    "Fastest the white point may fall per second, in stops. Caps how quickly the image brightens when the scene turns dark.",
+                                    "%.2f");
                     }
                     SliderResetWidth("Measure every N frames");
                     int every = int(modelSettings.pass.white.every);
